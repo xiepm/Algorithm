@@ -99,8 +99,6 @@ ensure_prerequisites() {
 ensure_prerequisites
 
 cmake_args=(
-  -S "${ROOT_DIR}"
-  -B "${BUILD_DIR}"
   -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
 )
 
@@ -108,8 +106,15 @@ if [[ -n "${GENERATOR}" ]]; then
   cmake_args+=(-G "${GENERATOR}")
 fi
 
-cmake "${cmake_args[@]}"
-cmake --build "${BUILD_DIR}" --parallel "${BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}"
+mkdir -p "${BUILD_DIR}"
+cmake_args+=("${ROOT_DIR}")
+
+(
+  cd "${BUILD_DIR}"
+  cmake "${cmake_args[@]}"
+)
+
+cmake --build "${BUILD_DIR}" -- -j "${BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}"
 
 echo
 echo "Build complete."

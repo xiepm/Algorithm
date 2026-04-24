@@ -45,6 +45,8 @@ sudo apt install -y build-essential cmake libeigen3-dev
 INSTALL_DEPS=1 ./build.sh
 ```
 
+`build.sh` 已兼容 Ubuntu 18 自带的 CMake 3.10，不依赖较新的 `cmake -S/-B` 或 `cmake --build --parallel` 参数。
+
 也可以手动执行：
 
 ```bash
