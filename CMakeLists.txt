@@ -41,6 +41,24 @@ if(NOT EIGEN3_INCLUDE_DIR)
     )
 endif()
 
+find_path(BOOST_INCLUDE_DIR
+    NAMES boost/circular_buffer.hpp
+    HINTS
+        "${PROJECT_EXTERNAL_DIR}/boost"
+        "${PROJECT_EXTERNAL_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    PATHS
+        /usr/include
+        /usr/local/include
+)
+
+if(NOT BOOST_INCLUDE_DIR)
+    message(FATAL_ERROR
+        "Could not find Boost headers (expected boost/circular_buffer.hpp). "
+        "Install libboost-dev or place headers under external/boost."
+    )
+endif()
+
 foreach(required_dir IN ITEMS
     "${CODESYS_COMPONENTS_DIR}"
     "${CODESYS_PLATFORM_DIR}"
@@ -57,6 +75,7 @@ include_directories(
     ${CODESYS_COMPONENTS_DIR}
     ${CODESYS_PLATFORM_DIR}
     ${EIGEN3_INCLUDE_DIR}
+    ${BOOST_INCLUDE_DIR}
 )
 
 aux_source_directory(src srcs)

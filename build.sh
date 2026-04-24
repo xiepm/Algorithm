@@ -33,12 +33,20 @@ have_eigen() {
     || [[ -f /usr/local/include/eigen3/Eigen/Eigen ]]
 }
 
+have_boost() {
+  [[ -f "${ROOT_DIR}/external/boost/boost/circular_buffer.hpp" ]] \
+    || [[ -f "${ROOT_DIR}/external/include/boost/circular_buffer.hpp" ]] \
+    || [[ -f "${ROOT_DIR}/include/boost/circular_buffer.hpp" ]] \
+    || [[ -f /usr/include/boost/circular_buffer.hpp ]] \
+    || [[ -f /usr/local/include/boost/circular_buffer.hpp ]]
+}
+
 print_debian_help() {
   cat <<'EOF' >&2
 [build] Missing build prerequisites.
 [build] On Ubuntu/Debian, install them with:
 [build]   sudo apt update
-[build]   sudo apt install -y build-essential cmake libeigen3-dev
+[build]   sudo apt install -y build-essential cmake libeigen3-dev libboost-dev
 [build] Then rerun:
 [build]   ./build.sh
 [build] Or let the script install them automatically:
@@ -50,7 +58,7 @@ install_debian_deps() {
   command_exists sudo || die "Automatic dependency install requires 'sudo'."
   log "Installing build dependencies with apt."
   sudo apt update
-  sudo apt install -y build-essential cmake libeigen3-dev
+  sudo apt install -y build-essential cmake libeigen3-dev libboost-dev
 }
 
 ensure_prerequisites() {
@@ -76,6 +84,11 @@ ensure_prerequisites() {
     missing=1
   fi
 
+  if ! have_boost; then
+    log "Missing Boost headers (expected boost/circular_buffer.hpp)."
+    missing=1
+  fi
+
   if [[ "${missing}" -eq 0 ]]; then
     return 0
   fi
@@ -84,6 +97,7 @@ ensure_prerequisites() {
     if [[ "${INSTALL_DEPS}" == "1" ]]; then
       install_debian_deps
       have_eigen || die "Eigen is still unavailable after dependency installation."
+      have_boost || die "Boost headers are still unavailable after dependency installation."
       command_exists cmake || die "cmake is still unavailable after dependency installation."
       command_exists c++ || die "c++ is still unavailable after dependency installation."
       command_exists cc || die "cc is still unavailable after dependency installation."

@@ -35,7 +35,7 @@
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential cmake libeigen3-dev
+sudo apt install -y build-essential cmake libeigen3-dev libboost-dev
 ./build.sh
 ```
 
@@ -46,6 +46,7 @@ INSTALL_DEPS=1 ./build.sh
 ```
 
 `build.sh` 已兼容 Ubuntu 18 自带的 CMake 3.10，不依赖较新的 `cmake -S/-B` 或 `cmake --build --parallel` 参数。
+项目还依赖 Boost 头文件中的 `circular_buffer`，Ubuntu/Debian 上可通过 `libboost-dev` 提供。
 
 也可以手动执行：
 
