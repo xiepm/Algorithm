@@ -31,6 +31,20 @@
 ./build.sh
 ```
 
+如果是全新 Ubuntu 18.04 / Debian 环境，建议先安装依赖：
+
+```bash
+sudo apt update
+sudo apt install -y build-essential cmake libeigen3-dev
+./build.sh
+```
+
+也可以让脚本自动安装缺失依赖：
+
+```bash
+INSTALL_DEPS=1 ./build.sh
+```
+
 也可以手动执行：
 
 ```bash
@@ -59,4 +73,5 @@ cmake --build build --parallel
 
 - `build/` 为本地产物目录，不纳入版本控制
 - `external/` 下包含构建所需头文件和依赖接口，请保留目录结构
+- `build.sh` 会自动创建 `build/` 目录，因此首次拉取仓库不需要预先手动创建它
 - 若后续需要补充接口说明、算法原理或输入输出格式，建议继续扩展本 README
