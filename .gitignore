@@ -1,71 +1,52 @@
-# Prerequisites
-*.d
+# Build outputs
+/build/
+/CMakeCache.txt
+/CMakeFiles/
+/CMakeScripts/
+/Testing/
+/Makefile
+/cmake_install.cmake
+/install_manifest.txt
+/compile_commands.json
+/CTestTestfile.cmake
+/_deps/
 
-# Compiled Object files
+# Compiler artifacts
+*.d
 *.slo
 *.lo
 *.o
 *.obj
-
-# Precompiled Headers
 *.gch
 *.pch
-
-# Compiled Dynamic libraries
 *.so
 *.dylib
 *.dll
-
-# Fortran module files
 *.mod
 *.smod
-
-# Compiled Static libraries
 *.lai
 *.la
 *.a
 *.lib
-
-# Executables
 *.exe
 *.out
 *.app
 
-# File
-*.csv
-
-
-CMakeLists.txt.user
-CMakeCache.txt
-CMakeFiles
-CMakeScripts
-Testing
-Makefile
-cmake_install.cmake
-install_manifest.txt
-compile_commands.json
-CTestTestfile.cmake
-_deps
-
-
-#vscode
-.vscode/ipch/*
+# IDE and local tooling
+/.codex
+/.vs/
+/.vscode/
+/.vscode/ipch/
 *.bin
 *.ipch
-/.codex
-/build/
-
-build/testDemo
-
-*.db-wal
 *.suo
+*.opendb
+/CMakeSettings.json
+
+# Local runtime and test artifacts
 *.db
 *.db-shm
-*.ipch
+*.db-wal
 *.sqlite
-/CMakeSettings.json
-*.json
 *.fgp
-/.vs/CMake Overview
-*.opendb
-/.vs/RTOSAlgortithm
+test/output.csv
