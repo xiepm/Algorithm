@@ -60,8 +60,14 @@ EcBoolean CHansCollaborativeAlgorithm::initializeStates
 		m_IsInitialized = EcFalse;
 		return EcFalse;
 	}
+	// 机型约定：
+	// 1 -> UR 六轴
+	// 2 -> 七轴机型（当前动力学为占位实现）
+	// other -> Elfin 六轴
 	if (robotType == 1)
 		m_dynBase.reset(new urDynamics);
+	else if (robotType == 2)
+		m_dynBase.reset(new sevendofDynamics);
 	else
 		m_dynBase.reset(new elfinDynamics);
 

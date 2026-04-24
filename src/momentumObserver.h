@@ -6,6 +6,7 @@
 #include "hansHighPassFilter.h"
 #include "dynamics/dynamicsBase.h"
 #include "dynamics/elfinDynamics.h"
+#include "dynamics/sevendofDynamics.h"
 #include "dynamics/urDynamics.h"
 #include <memory>
 #include <iostream>

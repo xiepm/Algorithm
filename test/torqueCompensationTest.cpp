@@ -4,6 +4,7 @@
 
 #include "src/dynamics/dynamicsBase.h"
 #include "src/dynamics/elfinDynamics.h"
+#include "src/dynamics/sevendofDynamics.h"
 #include "src/dynamics/urDynamics.h"
 
 namespace
@@ -28,6 +29,10 @@ std::shared_ptr<dynamicsBase> createDynamics(const std::string& robotName)
 	{
 		return std::shared_ptr<dynamicsBase>(new elfinDynamics());
 	}
+	if (robotName == "sevendof")
+	{
+		return std::shared_ptr<dynamicsBase>(new sevendofDynamics());
+	}
 
 	return std::shared_ptr<dynamicsBase>(new urDynamics());
 }
@@ -47,6 +52,7 @@ int main(int argc, char* argv[])
 	//    ./build/torqueCompensationTest
 	//    ./build/torqueCompensationTest ur
 	//    ./build/torqueCompensationTest elfin
+	//    ./build/torqueCompensationTest sevendof
 
 	const std::string robotName = (argc > 1) ? argv[1] : "ur";
 	std::shared_ptr<dynamicsBase> dynamics = createDynamics(robotName);
@@ -59,6 +65,10 @@ int main(int argc, char* argv[])
 	{
 		kinParams = { 0.22, 0.42, 0.18, 0.38 };
 	}
+	else if (robotName == "sevendof")
+	{
+		kinParams = { 0.34, 0.40, 0.40, 0.12, 0.12, 0.10, 0.08 };
+	}
 	else
 	{
 		kinParams = { 0.22, 0.42, 0.18, 0.12, 0.38, 0.30 };
@@ -68,14 +78,26 @@ int main(int argc, char* argv[])
 
 	// 设置动力学线性参数。
 	// 实际工程里应当替换成真实标定值；这里用 1.0 只是为了把测试流程跑通。
-	EcRealVector dynParams(78, 1.0);
+	EcRealVector dynParams((robotName == "sevendof") ? 91 : 78, 1.0);
 
 	// 待测试输入：关节位置、速度、加速度
-	EcRealVector q   = { 0.10, -0.35, 0.45, -0.20, 0.15, 0.05 };
-	EcRealVector dq  = { 0.20, -0.10, 0.15, 0.00, 0.05, -0.02 };
-	EcRealVector ddq = { 0.50,  0.20, -0.10, 0.08, 0.03,  0.01 };
+	EcRealVector q;
+	EcRealVector dq;
+	EcRealVector ddq;
+	if (robotName == "sevendof")
+	{
+		q   = { 0.10, -0.35, 0.45, -0.20, 0.15, 0.05, -0.12 };
+		dq  = { 0.20, -0.10, 0.15, 0.00, 0.05, -0.02, 0.08 };
+		ddq = { 0.50,  0.20, -0.10, 0.08, 0.03,  0.01, -0.04 };
+	}
+	else
+	{
+		q   = { 0.10, -0.35, 0.45, -0.20, 0.15, 0.05 };
+		dq  = { 0.20, -0.10, 0.15, 0.00, 0.05, -0.02 };
+		ddq = { 0.50,  0.20, -0.10, 0.08, 0.03,  0.01 };
+	}
 
-	EcRealVector tau(6, 0.0);
+	EcRealVector tau(q.size(), 0.0);
 	EcBoolean ok = dynamics->calculateEstimateJointToqrues(q, dq, ddq, dynParams, tau);
 
 	if (!ok)

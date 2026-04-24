@@ -35,8 +35,11 @@ EcBoolean momentumObserver::initializeStates
 	const int robotType
 )
 {
+	// 与协作算法主入口保持同一套机型编号，避免观测器和主流程选择不同动力学模型。
 	if (robotType == 1)
 		m_dynBase.reset(new urDynamics);
+	else if (robotType == 2)
+		m_dynBase.reset(new sevendofDynamics);
 	else
 		m_dynBase.reset(new elfinDynamics);
 	m_NumJoints = jointPositions.size();
