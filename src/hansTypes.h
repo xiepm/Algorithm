@@ -9,6 +9,16 @@
 #pragma warning( disable : 4290 )
 #define  Max_ActualAxisCnt 6
 
+#define			        NUMOFJOINTS3	                    3  // 5轴机械臂
+#define			        NUMOFJOINTS5	                    5  // 5轴机械臂#define			        NUMOFJOINTS5	                    5  // 5轴机械臂
+#define			        NUMOFJOINTS6	                    6  // 6轴机械臂
+#define					NUMOFJOINTS7						7  // 7轴机械臂
+#define					NUMOFSOLVED8				        8  // 8组臂型解 
+#define					NUMOFSOLVED4				        4  // 4组臂型解（针对5DOF机械臂）
+#define			        DIMOFTASKSPACE6	                    6  // 6维任务空间
+#define			        DIMOFTASKSPACE3                     3  // 3维任务空间
+
+
 typedef bool                    EcBoolean;
 typedef double					EcReal;
 
@@ -45,6 +55,24 @@ typedef Eigen::MatrixXd					  EcRealMatrixX;
 typedef Eigen::VectorXd					  EcRealVectorX;
 typedef Eigen::Quaternionf				  EcQuaternion;
 
+typedef std::vector<EcVector>			  EcVectorVector;
+
+typedef enum EN_inverseKineState
+{
+	ikState_normal = 0,
+	ikState_outofLimit,			// immediately stop motio；
+	ikState_noSolution,			// need to switch to emergency stop plan;
+	ikState_notContinuous,		// need to switch to emergency stop plan;
+}ENInverseKineState;
+
+typedef struct FullDHParams {
+	EcReal theta[10];
+	EcReal k[10];
+	EcReal d[10];
+	EcReal a[10];
+	EcReal alpha[10];
+	EcReal beta[10];
+}DHParams;
 
 typedef struct EN_PcsElem
 {
@@ -97,10 +125,10 @@ typedef enum EN_TrayMode
 
 
 typedef struct EN_RobotDH{
-	EcReal theta[6];
-	EcReal d[6];
-	EcReal a[6];
-	EcReal alpha[6];
+	EcReal theta[10];
+	EcReal d[10];
+	EcReal a[10];
+	EcReal alpha[10];
 }RobotDH;
 
 // tolerance �����Ƿ�λ���˶�״̬�жϣ�Ŀ��λ���뵱ǰλ�ò�ͬ����Ϊ�����˶��У���ͬ����Ϊ���˶���ɣ�

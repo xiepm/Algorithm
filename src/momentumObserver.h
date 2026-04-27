@@ -6,14 +6,14 @@
 #include "hansHighPassFilter.h"
 #include "dynamics/dynamicsBase.h"
 #include "dynamics/elfinDynamics.h"
-#include "dynamics/sevendofDynamics.h"
 #include "dynamics/urDynamics.h"
+#include "dynamics/anthorDynamics.h"
 #include <memory>
 #include <iostream>
 
 class momentumObserver
 {
-#define						LOWLEVELVELOCITY						0.157
+#define						LOWLEVELVELOCITY						0.18
 public:
 	static std::shared_ptr<momentumObserver> create
 	(
@@ -45,6 +45,10 @@ public:
 	(
 		const EcRealVector threshold
 	);
+
+	void set15066Strategy(EcBoolean is15066) {
+		b_is15066Strategy = is15066;
+	}
 
 	void setDynamicsFactorThreshold
 	(
@@ -80,8 +84,17 @@ public:
 		EcRealVector& jointMomentum
 	);
 
+<<<<<<< HEAD
 	void calculateMomentum(const EcRealVector& jointPosition, const EcRealVector& jointVelocity, EcReal& momentum);
 
+=======
+	void calculateGeneralizeMomentum
+	(
+		const EcRealVector& q,
+		const EcRealVector& dq,
+		EcRealVector& jointMomentum
+	);
+>>>>>>> 40f7afc7711530af2c9319aaedf0d2aa15dee117
 
 protected:
 	EcBoolean calculateMomentumObserverTorque
@@ -104,12 +117,7 @@ protected:
 		EcRealVector& linkSideTorques
 	);
 
-	void calculateGeneralizeMomentum
-	(
-		const EcRealVector& q,
-		const EcRealVector& dq,
-		EcRealVector& jointMomentum
-	);
+	
 
 	void calculateMassMatrix
 	(
@@ -143,7 +151,7 @@ private:
 	dynBasePtr								m_dynBase;
 	EcReal                                  m_SamplePeriod;     ///< Sampling time of the process
 	EcBoolean								b_isInitialize;
-	EcReal									m_KObserverCoeff;
+	EcReal									m_KObserverCoeff;	// observer gain K0, ref page:.37  Towards Safe Robots_ Approaching Asimov’s 1st Law
 	EcRealVector							m_dynamicsParam;
 	EcRealVector							m_dynamicsFullParam;
 	EcRealVector							m_moterSideParams;
@@ -164,6 +172,7 @@ private:
 	hansHighPassFilter						m_highPassFilter;
 	EcRealVector							high_a, high_b;
 
+	EcBoolean								b_is15066Strategy;
 private:
 	EcRealVector				m_zeros;
 	EcRealVector				m_v1, m_v2, m_v3, m_v4, m_v5, m_v6;

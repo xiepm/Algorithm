@@ -1,13 +1,6 @@
 #include "elfinDynamics.h"
 #include <iostream>
 
-// 说明：
-// 这个文件里的大段 x0/x1/x2 ... 公式不是手写业务逻辑，
-// 而是符号推导或自动生成后的动力学表达式。
-// 新人阅读时，不建议逐项抠每个中间变量，
-// 更推荐先抓住“输入是什么、输出是什么、什么时候调用”。
-
-/// @brief 构造 Elfin 动力学对象并填入默认值。
 elfinDynamics::elfinDynamics()
 {
 	m_NumJoints = 6;
@@ -15,7 +8,7 @@ elfinDynamics::elfinDynamics()
 	m_gy = 0;
 	m_gz = -9.81;
 
-	m_d1 = 0.220;		//默认设置为ElfinV5的杆长参数；
+	m_d1 = 0.220;		//Ĭ������ΪElfinV5�ĸ˳�������
 	m_d4 = 0.420;
 	m_d6 = 0.180;
 	m_a2 = 0.380;
@@ -28,7 +21,6 @@ elfinDynamics::elfinDynamics()
 }
 
 
-/// @brief 析构函数。
 elfinDynamics::~elfinDynamics()
 {
 
@@ -41,8 +33,6 @@ void elfinDynamics::setRobotDHParameters
 	const EcRealVector& kinematcisParam
 )
 {
-	// Elfin 版本默认按 [d1, d4, d6, a2] 的顺序读取参数。
-	// 注意：这里不做长度检查，调用方必须保证输入向量至少有 4 个元素。
 	m_d1 = kinematcisParam[0];
 	m_d4 = kinematcisParam[1];
 	m_d6 = kinematcisParam[2];
@@ -55,8 +45,6 @@ void elfinDynamics::setGravityVector
 	const EcReal gx, const EcReal gy, const EcReal gz
 )
 {
-	// 当机器人安装方向变化，或者世界坐标系定义变化时，
-	// 需要重新调用这里，避免重力项方向算错。
 	m_gx = gx;
 	m_gy = gy;
 	m_gz = gz;
@@ -69,30 +57,11 @@ void elfinDynamics::calculateGravityJointTorques
 	EcRealVector& tau
 )
 {
-	// 这里通过“速度=0，加速度=0”的方式复用完整动力学模型，
-	// 得到只与姿态和重力相关的静态补偿力矩。
 	calculateEstimateJointToqrues(q, m_zeros, m_zeros, parms, tau);
 }
 
 
-/// @brief 计算 Elfin 的完整关节估计力矩。
-///
-/// 使用示例：
-/// @code
-/// elfinDynamics dyn;
-/// dyn.setRobotDHParameters({0.22, 0.42, 0.18, 0.38});
-/// dyn.setGravityVector(0.0, 0.0, -9.81);
-///
-/// EcRealVector q(6, 0.0), dq(6, 0.0), ddq(6, 0.0);
-/// EcRealVector parms(78, 0.0);
-/// EcRealVector tau(6, 0.0);
-/// EcBoolean ok = dyn.calculateEstimateJointToqrues(q, dq, ddq, parms, tau);
-/// @endcode
-///
-/// 注意：
-/// - 仅检查 q/dq/ddq 的长度是否等于 6
-/// - `tau` 建议调用前先 `assign(6, 0.0)`
-/// - `parms` 必须足够长，否则会越界
+// calculate forward dynamics of elfin
 EcBoolean elfinDynamics::calculateEstimateJointToqrues
 (
 	const EcRealVector& q,
@@ -109,10 +78,6 @@ EcBoolean elfinDynamics::calculateEstimateJointToqrues
 	{
 		return false;
 	}
-	// 下面进入符号展开后的动力学主计算区：
-	// - 前半部分构造大量中间变量，减少重复计算
-	// - 后半部分将中间变量组合为 tau[0] ~ tau[5]
-	// 新人重点看最后关节力矩的组合关系即可。
 	double x0 = sin(q[0]);
 	double x1 = cos(q[0]);
 	double x2 = -m_gy * x0 - m_gx * x1;
@@ -304,9 +269,9 @@ EcBoolean elfinDynamics::calculateEstimateJointToqrues
 	tau[4] = ddq[4] * parms[62] + dq[4] * parms[63] + parms[64] * sign(dq[4]) + x173;
 	tau[5] = ddq[5] * parms[75] + dq[5] * parms[76] + parms[77] * sign(dq[5]) + x151;
 
-	// 温度对粘性摩擦的修正：
-	// 这里以约 46 摄氏度为参考点，
-	// 在完整力矩的基础上附加一个与速度成比例的温度补偿项。
+	// 
+	// �����¶ȶ�ճ��Ħ�����ص�Ӱ��
+	//		��45��C��Ϊ�ο���׼��
 	EcRealVector temperatureFactor(6);
 	for (int i = 0; i < m_NumJoints; i++)
 	{
@@ -318,13 +283,7 @@ EcBoolean elfinDynamics::calculateEstimateJointToqrues
 }
 
 
-/// @brief 计算给动量观测器使用的估计力矩。
-///
-/// 这个版本强调“刚体动力学主项”，会排除一部分不希望重复计入的项。
-///
-/// 使用建议：
-/// - 做碰撞检测/扰动估计时使用
-/// - 做完整关节力矩补偿时不要用它替代 `calculateEstimateJointToqrues()`
+// exclude gravity, friction, motor inertia;
 void elfinDynamics::calculateMomentumEstimatedJointTorques
 (
 	const EcRealVector& q,
@@ -334,8 +293,6 @@ void elfinDynamics::calculateMomentumEstimatedJointTorques
 	EcRealVector& tau
 )
 {
-	// 同样是自动展开后的符号表达式。
-	// 这里输出的不是“完整电机驱动力矩”，而是更适合观测器使用的模型力矩。
 	double x0 = cos(q[1]);
 	double x1 = dq[0] * x0;
 	double x2 = -m_a2 * dq[1];
@@ -521,3 +478,14 @@ void elfinDynamics::calculateMomentumEstimatedJointTorques
 	//
 	return;
 }
+
+void elfinDynamics::calculateJointFricition(const EcRealVector& dq, const EcRealVector& parms, EcReal coeffColomb, EcReal coeffViscous, EcRealVector& tau)
+{
+	tau[0] = coeffViscous * dq[0] * parms[11] + coeffColomb * parms[12] * sign(dq[0]);
+	tau[1] = coeffViscous * dq[1] * parms[24] + coeffColomb * parms[25] * sign(dq[1]);
+	tau[2] = coeffViscous * dq[2] * parms[37] + coeffColomb * parms[38] * sign(dq[2]);
+	tau[3] = coeffViscous * dq[3] * parms[50] + coeffColomb * parms[51] * sign(dq[3]);
+	tau[4] = coeffViscous * dq[4] * parms[63] + coeffColomb * parms[64] * sign(dq[4]);
+	tau[5] = coeffViscous * dq[5] * parms[76] + coeffColomb * parms[77] * sign(dq[5]);
+}
+

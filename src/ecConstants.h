@@ -10,7 +10,7 @@
 #include "hansTypes.h"
 
 
-#define		numofJoints			6
+#define		numofJoints			10
 #define		spaceDOF			6
 
 /**\namespace Ec

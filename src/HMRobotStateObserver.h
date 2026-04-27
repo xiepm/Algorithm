@@ -12,7 +12,8 @@
 //#include <manipulator/ecMassMatrixTool.h>
 #include "hansLowPassFilter.h"
 
-#include <boost/circular_buffer.hpp>
+//#include <boost/circular_buffer.hpp>
+#include "circular_buffer.hpp"
 
 /*
 /// forward declarations
@@ -126,6 +127,9 @@ public:
 		EcRealVector& estJointVelocities,
 		EcRealVector& estJointAccelerations
 		);
+
+
+	virtual void set15066Strategy(bool enable);
 
 	/// @brief Filter motor currents
 	/// @param [in] motorCurrents The motor currents at each joint
@@ -243,11 +247,19 @@ protected:
 
 
 
-	boost::circular_buffer<EcRealVector>	m_OldJointPositions;     ///< A circular buffer for time series joint position data
-	boost::circular_buffer<EcRealVector>	m_OldJointVelocity;     ///< A circular buffer for time series joint position data
-	boost::circular_buffer<EcRealVector>	m_OldAdmittanceDeviatePose;     ///< A circular buffer for time series admittance deviate pose data
-	boost::circular_buffer<EcRealVector>	m_OldDisturbanceTorques;		/// A circular buffer for disturbance joint torques
-	boost::circular_buffer<EcRealVector>    m_OldJointCurrents;
+	circular_buffer<EcRealVector>	m_OldJointPositions;     ///< A circular buffer for time series joint position data
+	circular_buffer<EcRealVector>	m_OldJointVelocity;     ///< A circular buffer for time series joint position data
+	circular_buffer<EcRealVector>	m_OldAdmittanceDeviatePose;     ///< A circular buffer for time series admittance deviate pose data
+	circular_buffer<EcRealVector>	m_OldDisturbanceTorques;		/// A circular buffer for disturbance joint torques
+	circular_buffer<EcRealVector>    m_OldJointCurrents;
+	EcRealVector							m_previousMotorCurrent;		// 上一周期的电机电流；
+	EcBoolean								b_previousUnNomalCurrentStatus;
+	EcU32Vector								m_lastUnNomalCount;
+	EcRealVector							m_errorDeltaThresholdCurrent;		// 关节电流每周期异常判断的电流变化值；
+
+
+
+	EcBoolean								b_is15066Stategy;					// 是否为15066策略，电流是否需要滤波；
 };
 
 #endif

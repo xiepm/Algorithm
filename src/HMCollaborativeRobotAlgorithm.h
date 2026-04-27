@@ -18,8 +18,16 @@
 #include "frames.hpp"
 #include "dynamics/dynamicsBase.h"
 #include "dynamics/elfinDynamics.h"
-#include "dynamics/sevendofDynamics.h"
 #include "dynamics/urDynamics.h"
+#include "dynamics/palletDynamics.h"
+#include "dynamics/dsDynamics.h"
+#include "dynamics/anthorDynamics.h"
+#include "kinematics/kinematicsBase.h"
+#include "kinematics/elfinKinematics.h"
+#include "kinematics/URKinematics.h"
+#include "kinematics/palletKinematics.h"
+#include "kinematics/DSKinematics.h"
+#include "movingAverage.h"
 #include <memory>
 
 typedef enum EN_motionConstraintStatus {
@@ -48,7 +56,7 @@ typedef enum EN_AssistiveState {
 	4. 机器人状态错误，提醒用户检测当前的负载、关节零点是否准确；
 	5. 机器人稳定状态，在碰撞检测状态下，可以切换为位置模式
 	6. 机器人处于严重碰撞模式，应当直接去使能
-	7. overMotionConstraints, 超出机器人所允许的运动约束限制，包括速度、功率、动量等
+	7. 关节速度已接近为0，允许关闭零力示教；
 
 	*/
 }ENAssistiveState;
@@ -56,7 +64,8 @@ typedef enum EN_AssistiveState {
 typedef enum EN_CollisionType {
 	collision_none = 0,
 	collision_deviation,
-	collision_Observer
+	collision_Observer,
+	collision_forceSensor
 }ENCollisionType;
 
 typedef enum EN_DriveBackMode {
@@ -90,8 +99,9 @@ class CHansCollaborativeAlgorithm
 #define				MaxAllowPowerInAssistiveMode		250
 #define				MaxAllowMomentumInAssistiveMode		25					// 从10修改为20
 
-#define				driveBackJointPosition_away			0.0087				// 反弹到判定为脱离的关节位置0.5°	
-#define				driveBackJointPosition_control		0.0175				// 反弹到期望目标的关节位置1°；
+#define				driveBackJointPosition_away			0.015				// 反弹到判定为脱离的关节位置0.5°	
+#define				driveBackJointPosition_control		0.03				// 反弹到期望目标的关节位置1°；
+
 
 
 
@@ -113,6 +123,10 @@ protected:
 	);
 
 public:
+	static int getVersion() {
+		return 35;
+	}
+
 	EcBoolean initializeStates
 	(
 		const EcRealVector& jointPositions,
@@ -139,6 +153,29 @@ public:
 		const EcReal& currentTime
 	);
 
+	void updateForceSensorData(
+		const EcBoolean enable,
+		const EcVector force
+	);
+
+	void updateForceSensorForFeedForward(
+		const EcBoolean enable,
+		const EcRealVector& force
+	);
+
+	void setAssistDualEncoderFlag(EcBoolean flag) {
+		std::cout << "enable augmented assistive mode." << flag << std::endl << std::endl;
+
+		m_frictionModel.setAssistDualEncoderFlag(flag);
+	}
+
+	void setDualDiffEncoderThd(const EcRealVector& thd) {
+		m_frictionModel.setDualDiffEncoderThd(thd);
+	}
+
+	void updateDualEncoderPosition(const EcRealVector& jointSide, const EcRealVector& motorSide) {
+		m_frictionModel.updateDualEncoder(jointSide, motorSide);
+	}
 
 	EcBoolean checkForCollision
 	(
@@ -183,6 +220,14 @@ public:
 		const EcRealVector& maxCurrents
 	);
 
+	void setControlBoxAllowCurrentLimit
+	(
+		const EcReal maxCurrent
+	) {
+		std::cout << "set controlBox currentLimit:" << maxCurrent << std::endl;
+		m_maxAllowControlBoxCurrent = std::max(10.0, maxCurrent);
+	}
+
 	void setGravityVector
 	(
 		const EcRealVector& gravity
@@ -211,6 +256,13 @@ public:
 		const EcRealVector& kinematcisParam
 	);
 
+	void set15066Startegy(bool enable) {
+		if(enable)
+			std::cout << "cobot. NOF\n" << std::endl;
+		m_StateEstimator.set15066Strategy(enable);
+		b_is15066Strategy = enable;
+	}
+
 	EcBoolean setCollaborativeJointSpaceLimits
 	(
 		const EcRealVector& upperJointLimits,
@@ -233,7 +285,14 @@ public:
 		const EcRealVector& assistiveModeCollisionStopThresholds
 	);
 
+	// 静摩擦力矩补偿系数；
 	void setFrictionCompensatoryFactor
+	(
+		const EcRealVector& frictionCompensatoryFactor
+	);
+
+	// 粘性摩擦力矩补偿系数
+	void setDynFrictionCompensatoryFactor
 	(
 		const EcRealVector& frictionCompensatoryFactor
 	);
@@ -317,7 +376,8 @@ public:
 		EcReal& electircPower, // P = U * I;
 		EcReal& physicsPower,  // P = Torque * omega;
 		EcReal& momentum,	   // momemtum = mass * omega;
-		EcRealVector& jointPowers
+		EcRealVector& jointPowers,
+		EcBoolean isUsingCommandVel = false
 	);
 
 
@@ -345,6 +405,25 @@ public:
 	(
 		const EcReal compensateRatio,
 		EcRealVector& motorCurrentCommands
+	);
+
+	void getFlexibleCompensateGravityTorque
+	(
+		const EcRealVector& jointPosition, 
+		EcRealVector& gravTorque
+	);
+
+	//计算重力和离心科氏力
+	void getGravityAndCoriolisCentrifugalTorque
+	(
+		const EcRealVector& jointPosition,
+		const EcRealVector& jointVelocity,
+		EcRealVector& torque
+	);
+	void getJointInertia
+	(
+		const EcRealVector& jointPosition,
+		EcRealVector& inertia
 	);
 
 	// codesys version
@@ -503,7 +582,10 @@ private:
 		const EcRealVector& maxJointAccelerations
 	);
 
-	void updateDynamicsCollisionStopThreshold(EcRealVector& enchanceDisturbJointTorques);
+	// 动态计算当前的碰撞检测阈值；
+	// currentDisturbTorque,当前各关节的阈值，用于降低关节3的阈值；
+	// enchanceDisturbJointTorques, 动态计算的检测阈值
+	void updateDynamicsCollisionStopThreshold(const EcRealVector& currentDisturbTorque,EcRealVector& enchanceDisturbJointTorques);
 
 	void saturationFunction(EcReal& value, EcSizeT Index);
 
@@ -519,6 +601,9 @@ private:
 	dynBasePtr								m_dynBase;						// 动力学基类；
 	int										m_robotType;
 
+	kinBasePtr								m_kinBase;			// 运动学模块，用于计算碰撞反弹时的方向；
+
+
 	EcBoolean								m_logStatus;
 	EcBoolean                               m_IsInitialized;                ///< flag set to true if the class instance is initialized
 	EcU32									m_NumJoints;			    	//Number of Robot
@@ -528,19 +613,30 @@ private:
 	CHansRobotStateObserver					m_StateEstimator;				//Robot state estimator；
 	CHansRobotStateObserver					m_commandStateEstimator;
 	frictionModel							m_frictionModel;
+	EcBoolean								b_is15066Strategy;
 
 
 	EcBooleanVector							m_collisionStopStatus;
+	EcBooleanVector							m_savedCollisionStopStatus;
 	EcBooleanVector							m_driveBackCollisionStopStatus;
 	EcBooleanVector							m_driveBackStatus;
 	EcBooleanVector							m_driveBackBrakingStatus;
 	EcRealVector							m_driveBackTorques;
 	EcRealVector							m_driveBackStartPosition;
+	EcRealVector							m_collisionDetectivePosition;
 
 	ENDriveBackMode							m_drivebackMode;				// 碰撞后的反应策略选择
 	EcReal									m_allowBackDistance;			// 允许碰撞后运动的距离；
 	EcReal									m_allowMotionDuration;			// 允许碰撞后运动的时间；
 	EcRealVector							m_startDriveBackJointPosition;	// 碰撞发生时的关节位置；
+
+
+	// 评估碰撞反弹的质量，积分统计从检测到碰撞，到速度反向的时间段；
+	EcRealVector							m_accumuActualJointCurrent;		// 检测到碰撞时，实际电流的积分变化值；
+	EcRealVector							m_accumuActualXYZPosition;		// 检测到碰撞时，实际位置的变化量；
+	EcRealVector							m_startActualXYXVel;			// 开始检测到碰撞时，当前的笛卡尔线速度；
+	EcBoolean								b_reachZeroVelFlag;
+	EcReal									m_accumuTime;
 
 
 
@@ -551,13 +647,20 @@ private:
 	EcRealVector							m_centerofMass;					// the mass centor of payload (m);
 
 	EcReal									m_baseMountingRotation;			//Base mounting rotation rad；
-	EcReal									m_baseMountingTilt;				//Base mounting tilt rad；
+	EcReal									m_baseMountingTilt;				//Base mounting tilt rad； Y轴
 
 	EcRealVector                            m_FilteredJointPositions;     ///< Filtered joint positions (rad)
 	EcRealVector                            m_FilteredJointVelocities;    ///< Filtered joint velocities (rad/s)
 	EcRealVector                            m_FilteredJointAccelerations; ///< Filtered joint accelerations (rad/s^2)
 	EcRealVector                            m_FilteredMotorCurrents;      ///< Filtered motor currents (amps)
 	EcRealVector							m_jointVoltages;			  /// motor voltages(V);	
+
+	EcRealVector                            m_FilteredActualJointVelocities;    ///< Filtered joint velocities (rad/s)
+	EcRealVector                            m_FilteredActualJointAcc;    ///< Filtered joint velocities (rad/s)
+
+
+	EcU32									m_lockJointEstimateStatus;		// 去使能或零力示教，会产生命令位置的跳变，若检测到这个现象，则将速度状态的估计值，切换为实际速度；
+
 
 	EcRealVector                            m_FilteredCommandJointPositions;     ///< Filtered joint positions (rad)
 	EcRealVector                            m_FilteredCommandJointVelocities;    ///< Filtered joint velocities (rad/s)
@@ -572,9 +675,14 @@ private:
 	EcRealVector                            m_CollisionStopThresholds;    ///< Collision stop threshold 
 	EcRealVector                            m_CollisionStopDynamicsThresholds;
 	EcRealVector							m_AssistiveModeCollisionStopThresholds;
+	EcRealVector							m_previousEnchanceDisturbJointTorques;			// 上一个周期的动量约束，动量变化的机制：快上慢下（对于加速度的场景）
+	EcRealVector							m_weakRatio;
+
 
 	EcRealVector							m_DynamicsLinearParameters;		//Dynamics linear parameters；
 	EcRealVector							m_DynamicsParameters;			//Dynamics parameters；
+
+	EcRealVector							m_compenasteDynParams;
 
 	EcReal									m_nonZeroVelocity;				//Non-zero velocity threshold
 	EcRealVector							m_CoulombFriction;				//Joint coulomb friction
@@ -582,6 +690,7 @@ private:
 	EcRealVector							m_jointLimitAgainstForceEquivalent;//Joint limit against force equivalent
 	EcReal									m_timeStep;						//Time step
 	EcRealVector							m_maxJointVelocitiesInAssistiveMode;					//Max velocity in assistive mode
+	EcRealVector							m_maxJointVelocitiesInAssistiveModeForErr;				//用于零力示教状态下速度保护限制报错，有可能会轻微超过上面的速度限制；
 	EcReal									m_constraintsFrictionCompensatoryFactor;		// try to limit the friction compensatory factor;
 
 	EcRealVector							m_MaxActutorCurrents;
@@ -624,9 +733,16 @@ private:
 
 	EcRealVector                            m_DisturbanceJointTorques;		  ///< Disturbance joint torques (Nm)
 	EcRealVector							m_meanDisturbanceJointTorques;	///mean disturbance torques in 10 circle times(Nm)
+	EcRealVector							m_diffTorqueTriggerCollisionRatio;	// 力矩差值大于设置的倍数时触发碰撞的设置值；
 	EcRealVector                            m_SensedJointTorques;			    ///< Sensed joint torques (Nm)
 	EcRealVector                            m_EstimatedJointTorques;		    ///< Esimtated joint torques (Nm)
 	EcRealVector							m_FilteredSensedEeForces;		  ///< Sensed end effector force(N,Nm)
+	EcRealVector                            m_EstimatedGravityTorques;		    ///< Esimtated joint torques (Nm)
+	EcU32									m_movMeanLenForDistrubanceTorque;   //扰动力矩均值计算窗口
+
+
+
+
 	EcRealVector							m_FilteredAdmittanceDeviatePose;	///< Admittance deviate pose(m,rad)
 	EcRealVector							m_filteredAdmittanceVelocity;
 
@@ -653,11 +769,17 @@ private:
 	EcRealVector							m_AssistiveStartJointPosition;			// 启动零力示教时关节的位置；
 	EcRealVector							m_AssistiveStartSensedTorques;			// 启动零力示教时的关节检测力矩；
 
+	EcRealVector							m_previousFeedforwardCurrent;					// previous feedforward 
+
+	// driveBack 反弹
 	EcBoolean								b_isDriveBackAssistiveMode;
 	EcBoolean								b_isDriveBackMode;
 	EcReal									m_currentDriveBackTime;
 	EcReal									m_driveBackDuranceTime;
 	EcRealVector							m_driveBackDisturbancesThreshold;
+	hansMovingAverageVector					m_meanDriveBackTorque;						// 反弹进入第二个阶段后，采用均值滤波的方案；
+	EcBooleanVector							b_initEnterDriveBackFlag;					// 首次进入反弹状态的标志位
+	EcReal									m_maxAllowControlBoxCurrent;				// 零力示教模式下，允许的最大合成电流，确保不超过电箱允许上限。
 
 	EcReal									m_assistiveCheckTime;
 
@@ -667,7 +789,22 @@ private:
 	EcRealVector							m_actualPreviousJointVel;				// 无滤波上一周期的关节速度；
 	EcRealVector							m_startCollisionJointVel;				// 碰撞检测瞬间的关节速度；
 	std::vector< ENDriveBackStatus>			m_driveBackStatusVector;				// 各关节的反弹状态；（控制状态迁移）
+	EcRealVector							m_driveBackDirctionForJ5;				// 单独计算关节5的反弹方向；
 	EcRealVector							m_sensedRawTorque;
+
+
+	EcBoolean								b_enableForceCollision;					// 开启基于力传感器的碰撞检测状态
+	EcVector								m_sensedForce;							// 末端力传感器的数据；
+	EcVector								m_rawForce;
+	hansMovingAverageVector					m_forceMovMean;						// 力传感器的均值滤波
+	EcVector								m_forceCollisionThreshold;
+
+	EcReal									m_eeLinearVel;						// 末端线速度
+	EcVector								m_previousEndEffectorVel;					// 末端线速度矢量；
+	hansMovingAverageVector					m_eeAccMovMean;						// 末端线加速度的均值滤波器；
+	EcVector								m_meanEEAcc;						// 均值线加速度；
+
+
 
 	// 关闭零力示教
 	EcBoolean								b_isReadyToCloseMode;
@@ -677,13 +814,17 @@ private:
 	EcBooleanVector							b_havedReverseJointVel;
 
 
-	// Admitance control
-	//CAdmittancePositionControllerSharedPtr				m_sensorlessAdmitControl;
-	EcBoolean								b_isSensorlessAdmittanceMode;
+	// feedForward 力矩前馈
+	EcRealVector							m_feedForwardAccTorqueRatio;			// 力矩前馈中，加速度力的倍速；
+	EcRealVector							m_previousJointVelocity;				// 力矩前馈计算中，前一个周期的关节速度；
+	EcRealVector							m_jointTorqueFromEEForce;				// 力控状态下，末端力传感器的感受力转换为关节力，提高关节的响应速度；
+	EcBoolean								b_enableEEWrenchFeedForward;			// 开启末端力前馈的状态；
+	EcRealVector							m_FeedAccTorque;						// 加速度力矩前馈力矩
 
 	// momentum
 	EcBoolean								b_isUsingMomentumObserver;
 	CMomentumSharedPtr						m_momentumObserver;
+	CMomentumSharedPtr						m_momentumObserverActual;				// 用实际的位置信息进行估计，完全靠命令位置，在有些运动指令（moveC）下，命令实际偏差很大，反而导致误差扩大；
 	EcRealVector							m_observerTorques;
 	EcRealVector							m_actualJointPositions;
 	EcRealVector							m_dampEfficiency;
@@ -712,7 +853,7 @@ private:
 	EcReal									m_preVelFactorConstraint;
 	EcReal									m_accFactorConstraint;
 	EcBoolean								b_constraintPowerStatus;
-	boost::circular_buffer<EcReal> 			m_meanFilteredVelConstraint;
+	circular_buffer<EcReal> 			m_meanFilteredVelConstraint;
 
 
 
@@ -735,7 +876,12 @@ private:
 	EcReal									m_motionConstraintScale;				//  若上次启动的零力示教存在异常，则讲最大允许速度降低，持续3s；
 
 	EcRealVectorVector						m_loopJointPosition;
+	EcRealVectorVector						m_loopCommandJointPosition;
 	EcRealVectorVector						m_loopSensedCurrent;
+	hansMovingAverageVector					m_diffTorqueMovMean;					// 力矩差值的均值滤波器；
+
+	// log
+	EcBoolean								b_logFlag;
 public:
 };
 

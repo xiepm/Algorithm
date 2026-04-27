@@ -10,29 +10,14 @@ extern "C" {
 #define   JOINTNUM			6
 
 	std::shared_ptr<CHansCollaborativeAlgorithm> m_cobotAlgorithm;
+	int m_robotType = 0;
+
+	bool b_enableDualAugentedAssistiveMode = false;
 	//EcRealVector	temp(JOINTNUM);
 	//m_cobotAlgorithm = CHansCollaborativeAlgorithm::create(temp, 0.001);
 
-	void transAxisPosToVector(AXISPOS_REF* jointPosition, EcRealVector& jointPos)
-	{
-		jointPos.assign(6, 0.0);
-		jointPos[0] = jointPosition->a0;
-		jointPos[1] = jointPosition->a1;
-		jointPos[2] = jointPosition->a2;
-		jointPos[3] = jointPosition->a3;
-		jointPos[4] = jointPosition->a4;
-		jointPos[5] = jointPosition->a5;
-	}
+	EcRealVector m_jointSidePosition(6), m_motorSidePosition(6);
 
-	void transVectorToAxisPos(EcRealVector& jointPos, AXISPOS_REF* jointPosition)
-	{
-		jointPosition->a0 = jointPos[0];
-		jointPosition->a1 = jointPos[1];
-		jointPosition->a2 = jointPos[2];
-		jointPosition->a3 = jointPos[3];
-		jointPosition->a4 = jointPos[4];
-		jointPosition->a5 = jointPos[5];
-	}
 
 	void transREALDegToVectorRad(RTS_IEC_LREAL* realValue, EcRealVector& realVector)
 	{
@@ -43,11 +28,14 @@ extern "C" {
 		}
 	}
 
-	void transVectorRadToREALDeg(EcRealVector& realVector, RTS_IEC_LREAL* realValue)
+	void transVectorRadToREALDeg(EcRealVector& realVector, RTS_IEC_LREAL* realValue,double maxLimit = 10000)
 	{
 		for (int i = 0; i < JOINTNUM; i++)
 		{
 			realValue[i] = realVector[i] * KDL::rad2deg;
+			
+			if (fabs(realValue[i]) > maxLimit)
+				realValue[i] = sign(realValue[i]) * maxLimit;
 		}
 	}
 
@@ -60,12 +48,18 @@ extern "C" {
 		}
 	}
 
-	void transVectorToREAL(EcRealVector& realVector, RTS_IEC_LREAL* realValue, int size)
+	void transVectorToREAL(EcRealVector& realVector, RTS_IEC_LREAL* realValue, int size, double maxLimit = 10000)
 	{
 		for (int i = 0; i < size; i++)
 		{
 			realValue[i] = realVector[i];
+
+			if (fabs(realValue[i]) > maxLimit)
+				realValue[i] = sign(realValue[i]) * maxLimit;
 		}
+		if (m_robotType == 7 || m_robotType == 8)
+			for (int i = 6; i < 10; i++)
+				realValue[i] = 0;
 	}
 
 	void transVectorToINT(EcU32Vector& intVector, RTS_IEC_INT* intValue, int size)
@@ -107,6 +101,9 @@ extern "C" {
 		{
 			realValue[i] = vector[i];
 		}
+		if (m_robotType == 7 || m_robotType == 8)
+			for (int i = 6; i < 10; i++)
+				realValue[i] = 0;
 	}
 
 
@@ -118,11 +115,26 @@ extern "C" {
 		EcRealVector jointPos;
 		transREALDegToVectorRad(jointPosition, jointPos);
 		m_cobotAlgorithm = CHansCollaborativeAlgorithm::create(jointPos, updatePeriod, robotType);
+<<<<<<< HEAD
 
 		EcRealVector KineParams = { kinParams[0] * 0.001, kinParams[1] * 0.001, kinParams[2] * 0.001, kinParams[3] * 0.001, kinParams[4] * 0.001, kinParams[5] * 0.001, kinParams[6] * 0.001, kinParams[7] * 0.001 };
 		std::cout << "(cobotKin.b) " << robotType << "  ,  " << KineParams[0] << "," << KineParams[1] << "," << KineParams[2] << "," << KineParams[3] << "," << KineParams[4] << "," << KineParams[5] << "," << KineParams[6] << "," << KineParams[7] << std::endl;
+=======
+		m_robotType = robotType;
+		EcRealVector KineParams = { kinParams[0] * 0.001, kinParams[1] * 0.001, kinParams[2] * 0.001, kinParams[3] * 0.001, kinParams[4] * 0.001, kinParams[5] * 0.001, kinParams[6] * 0.001, kinParams[7] * 0.001,0,0 };
+		//std::cout << "(cobotKin.11F.NOF.) " << robotType << "  ,  " << KineParams[0] << "," << KineParams[1] << "," << KineParams[2] << "," << KineParams[3] << "," << KineParams[4] << "," << KineParams[5] << "," << KineParams[6] << "," << KineParams[7] << std::endl;
+		//std::cout << "(cobotKin.13NOF) " << robotType << "  ,  " << KineParams[0] << "," << KineParams[1] << "," << KineParams[2] << "," << KineParams[3] << "," << KineParams[4] << "," << KineParams[5] << "," << KineParams[6] << "," << KineParams[7] << std::endl;
+		std::cout << "(cobotKinDual acc.+..+) "<<CHansCollaborativeAlgorithm::getVersion()<<"," << robotType << "," << updatePeriod << "  ,  " << KineParams[0] << "," << KineParams[1] << "," << KineParams[2] << "," << KineParams[3] << "," << KineParams[4] << "," << KineParams[5] << "," << KineParams[6] << "," << KineParams[7] << std::endl;
+>>>>>>> 40f7afc7711530af2c9319aaedf0d2aa15dee117
 		m_cobotAlgorithm->setRobotDHParameters(KineParams);
+	} 
+
+	void set15066StrategyInterface(RTS_IEC_BOOL enable)
+	{
+		m_cobotAlgorithm->set15066Startegy((bool)enable);
 	}
+
+
 
 	RTS_IEC_BOOL updateStateEstimates
 	(
@@ -136,8 +148,32 @@ extern "C" {
 		transREALDegToVectorRad(commandJointPositions, commandJointPos);
 		transREALDegToVectorRad(jointPositions, jointPos);
 		transREALToVector(motorCurrents, motorCurr);
+
+		//std::cout << "input:" << commandJointPositions[5] << "," << jointPositions[5] << "," << motorCurrents[5] << std::endl;
 		return m_cobotAlgorithm->updateStateEstimates(commandJointPos, jointPos, motorCurr, currentTime);
 	}
+
+	void updateForceSensorData(
+		RTS_IEC_BOOL enable,				/* VAR_INPUT */	/* 是否开启末端力传感器的碰撞检测功能； */
+		RTS_IEC_LREAL calibedForce[6]		/* VAR_INPUT */	/* 获取标定后的力传感器数据，当前为：GetFTValueInSelectedFrame */
+	)
+	{
+		EcVector calibed = { calibedForce[0],calibedForce[1],calibedForce[2] };
+		m_cobotAlgorithm->updateForceSensorData(enable, calibed);
+	}
+
+	void updateForceSensorForFoceControl(
+		RTS_IEC_BOOL enable,				/* VAR_INPUT */	/* 是否开启末端力传感器的对关节电流前馈的作用； */
+		RTS_IEC_LREAL calibedForce[6]		/* VAR_INPUT */	/* 获取标定后的力传感器数据，工具坐标系 */
+	)
+	{
+		EcRealVector force = { calibedForce[0],calibedForce[1],calibedForce[2],calibedForce[3],calibedForce[4],calibedForce[5] };
+
+		m_cobotAlgorithm->updateForceSensorForFeedForward(enable, force);
+
+	}
+
+
 
 	RTS_IEC_BOOL checkForCollision
 	(
@@ -148,6 +184,34 @@ extern "C" {
 		ENCollisionType type;
 		EcBoolean ret = m_cobotAlgorithm->checkForCollision(collisionStatus, type);
 		transBoolVectorToRTSBoolPointer(collisionStatus, jointCollisionStatus);
+		if (m_robotType == 7 || m_robotType == 8)
+		{
+			for (int i = 6; i < 10; i++)
+				jointCollisionStatus[i] = false;
+			//std::cout << "collision status:" << bool(jointCollisionStatus[6]) << "," << bool(jointCollisionStatus[7]) << "," << bool(jointCollisionStatus[8]) << "," << bool(jointCollisionStatus[9]) << std::endl;
+			/*
+			for (int i = 0; i < 10; i++)
+			{
+				if (bool(jointCollisionStatus[i]))
+				{
+					std::cout << "collision status:" << i << std::endl;
+				}
+			}
+			*/
+
+		}
+		/*
+		else
+		{
+			for (int i = 0; i < 6; i++)
+			{
+				if (bool(jointCollisionStatus[i]))
+				{
+					std::cout << "collision status:" << i << std::endl;
+				}
+			}
+		}
+		*/
 		return ret;
 	}
 
@@ -170,12 +234,62 @@ extern "C" {
 		transVectorRadToREALDeg(jointPos, jointPostions);
 		transVectorRadToREALDeg(jointVel, jointVelocities);
 		transVectorRadToREALDeg(jointAccel, jointAccelerations);
+
+		/**/
+		if (b_enableDualAugentedAssistiveMode)
+		{
+			transVectorRadToREALDeg(m_motorSidePosition, jointVelocities);
+			transVectorRadToREALDeg(m_jointSidePosition, jointAccelerations);
+		}
+		
+		//transVectorRadToREALDeg(m_motorSidePosition, jointVelocities);
+		//transVectorRadToREALDeg(m_jointSidePosition, jointAccelerations);
+
 		transVectorToREAL(motorCurr, motorCurrents, JOINTNUM);
 		transVectorToREAL(sensedTor, sensedTorques, JOINTNUM);
 		transVectorToREAL(estimatedTor, estimatedTorques, JOINTNUM);
 		transVectorToREALPointer(disturbTor, disturbanceTorques);
+
+		//std::cout << "output:" << jointPostions[5] << "," << jointVelocities[5] << "," << jointAccelerations[5] << "," << sensedTorques[5] << "," << estimatedTorques[5] << std::endl;
 		return ret;
 	}
+
+	void setAssistDualEncoderFlag(
+		RTS_IEC_BOOL flag
+	)
+	{
+		b_enableDualAugentedAssistiveMode = flag;
+		m_cobotAlgorithm->setAssistDualEncoderFlag(flag);
+	}
+
+	void setDualDiffEncoderThd(RTS_IEC_LREAL thd[6]) {
+
+		std::cout << "set dual thd:" << thd[0] << "," << thd[1] << "," << thd[2] << "," << thd[3] << "," << thd[4] << "," << thd[5] << std::endl;
+		EcRealVector vThd = { thd[0]*0.001, thd[1] * 0.001, thd[2] * 0.001, thd[3] * 0.001, thd[4] * 0.001, thd[5] * 0.001 };
+		m_cobotAlgorithm->setDualDiffEncoderThd(vThd);
+	}
+
+	void updateDualEncoderJointPosition(
+		RTS_IEC_LREAL motorSideJointPosition[6],	/* VAR_INPUT */	/* actual motor side  joint position(deg) */
+		RTS_IEC_LREAL jointSideJointPosition[6]	/* VAR_INPUT */	/* actual joint side joint position(deg) */
+	)
+	{
+		EcRealVector motorSide, jointSide,vMotorSide,vJointSide;
+		transREALDegToVectorRad(motorSideJointPosition, motorSide);
+		transREALDegToVectorRad(jointSideJointPosition, jointSide);
+		m_motorSidePosition = motorSide;
+		m_jointSidePosition = jointSide;
+
+		transREALToVector(motorSideJointPosition, vMotorSide);
+		transREALToVector(jointSideJointPosition, vJointSide);
+		m_cobotAlgorithm->updateDualEncoderPosition(vJointSide, vMotorSide);
+
+		/*
+		std::cout << "motor,joint:" << motorSideJointPosition[0] << "," << motorSideJointPosition[1] << "," << motorSideJointPosition[2] << "," << motorSideJointPosition[3] << "," << motorSideJointPosition[4] << "," << motorSideJointPosition[5] << ",   " <<
+			jointSideJointPosition[0] << "," << jointSideJointPosition[1] << "," << jointSideJointPosition[2] << "," << jointSideJointPosition[3] << "," << jointSideJointPosition[4] << "," << jointSideJointPosition[5] << std::endl;
+		*/
+	}
+
 
 	RTS_IEC_INT monitorMotionConstraintStatus
 	(
@@ -286,6 +400,7 @@ extern "C" {
 		RTS_IEC_LREAL* assistiveModeCollisionStopThresholds
 	)
 	{
+		std::cout << "assistiveMode thd:" << assistiveModeCollisionStopThresholds[0] << "," << assistiveModeCollisionStopThresholds[1] << "," << assistiveModeCollisionStopThresholds[2] << "," << assistiveModeCollisionStopThresholds[3] << "," << assistiveModeCollisionStopThresholds[4] << "," << assistiveModeCollisionStopThresholds[5] << std::endl;
 		EcRealVector stopThresholds;
 		transREALToVector(assistiveModeCollisionStopThresholds, stopThresholds);
 		m_cobotAlgorithm->setAssistiveModeCollisionStopThresholds(stopThresholds);
@@ -298,7 +413,7 @@ extern "C" {
 	)
 	{
 		std::cout << "Upper joint's Limit:" << upperJointLimits[0] << "," << upperJointLimits[1] << "," << upperJointLimits[2] << "," << upperJointLimits[3] << "," << upperJointLimits[4] << "," << upperJointLimits[5] << std::endl;
-		std::cout << "Upper joint's Limit:" << lowerJointLimits[0] << "," << lowerJointLimits[1] << "," << lowerJointLimits[2] << "," << lowerJointLimits[3] << "," << lowerJointLimits[4] << "," << lowerJointLimits[5] << std::endl;
+		std::cout << "Lower joint's Limit:" << lowerJointLimits[0] << "," << lowerJointLimits[1] << "," << lowerJointLimits[2] << "," << lowerJointLimits[3] << "," << lowerJointLimits[4] << "," << lowerJointLimits[5] << std::endl;
 
 		EcRealVector upper, lower;
 		transREALDegToVectorRad(upperJointLimits, upper);
@@ -313,8 +428,22 @@ extern "C" {
 	{
 		EcRealVector tempValue;
 		transREALToVector(frictionCompensatoryFactor, tempValue);
+		std::cout << "CompensateFrictionCoeff:" << frictionCompensatoryFactor[0] << ", " << frictionCompensatoryFactor[1] << ", " << frictionCompensatoryFactor[2] << ", " << frictionCompensatoryFactor[3] << ", " << frictionCompensatoryFactor[4] << ", " << frictionCompensatoryFactor[5] << std::endl;
 		m_cobotAlgorithm->setFrictionCompensatoryFactor(tempValue);
 	}
+
+	void setFrictionCompensatoryFactorII
+	(
+		RTS_IEC_LREAL* factor
+	)
+	{
+		std::cout << "DynFrictionCoeff:" << factor[0] << ", " << factor[1] << ", " << factor[2] << ", " << factor[3] << ", " << factor[4] << ", " << factor[5] << std::endl;
+		EcRealVector temp(6);
+		transREALToVector(factor, temp);
+		m_cobotAlgorithm->setStartCompensateFrictionFactor(temp);
+		m_cobotAlgorithm->setDynFrictionCompensatoryFactor(temp);
+	}
+
 
 
 	void setLowVelocityThreshold
@@ -366,6 +495,13 @@ extern "C" {
 		//std::cout<<"return assistiveMode = "<<ret<<std::endl;
 		transVectorToREALPointer(tempValue, motorCurrentCommands);
 		transBoolVectorToRTSBoolPointer(tempValue2, jointCollisionStatus);
+
+		if (m_robotType == 7 || m_robotType == 8)
+		{
+			motorCurrentCommands[6] = 0;
+			for (int i = 6; i < 10; i++)
+				jointCollisionStatus[i] = false;
+		}
 		return ret;
 	}
 
@@ -384,6 +520,8 @@ extern "C" {
 		transREALDegToVectorRad(jointAcceleration, acc);
 		m_cobotAlgorithm->getComputeTorqueCurrentCommands(compensateRatio, position, vel, acc, tempValue);
 		transVectorToREALPointer(tempValue, motorCurrentCommands);
+		if (m_robotType == 7 || m_robotType == 8)
+			motorCurrentCommands[6] = 0;
 	}
 
 	void getGravityTorqueCurrentCommands
@@ -398,6 +536,34 @@ extern "C" {
 		m_cobotAlgorithm->getGravityTorqueCurrentCommands(compensateRatio, joint, tempValue);
 		transVectorToREALPointer(tempValue, motorCurrentCommands);
 	}
+
+	/**/
+	void getGravityTorqueForFlexibleCompensate
+	(
+		RTS_IEC_LREAL* jointPosition,
+		RTS_IEC_LREAL* gravTorque
+	)
+	{
+		EcRealVector joint(6), tempValue(6);
+		transREALDegToVectorRad(jointPosition, joint);
+		m_cobotAlgorithm->getFlexibleCompensateGravityTorque(joint, tempValue);
+		transVectorToREALPointer(tempValue, gravTorque);
+	}
+	
+	void getJointInertia
+	(
+		RTS_IEC_LREAL* jointPosition,
+		RTS_IEC_LREAL* inertia
+	)
+	{
+		EcRealVector joint(6), tempValue(6);
+		transREALDegToVectorRad(jointPosition, joint);
+		m_cobotAlgorithm->getJointInertia(joint, tempValue);
+		transVectorToREALPointer(tempValue, inertia);
+	}
+
+
+
 
 	void setActutorDampConstants
 	(
@@ -436,16 +602,7 @@ extern "C" {
 		m_cobotAlgorithm->setCollisionStopInMomentumThresholds(temp);
 	}
 
-	void setFrictionCompensatoryFactorII
-	(
-		RTS_IEC_LREAL* factor
-	)
-	{
-		EcRealVector temp(6);
-		transREALToVector(factor, temp);
-		m_cobotAlgorithm->setStartCompensateFrictionFactor(temp);
-	}
-
+	
 	void setMaxPowerAndMomentumConstraints(
 		const RTS_IEC_LREAL maxPower,
 		const RTS_IEC_LREAL maxMomentum,

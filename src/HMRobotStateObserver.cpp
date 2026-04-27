@@ -1,22 +1,10 @@
 #include "HMRobotStateObserver.h"
-/*
-#include <manipulator/ecDh.h>
-#include <foundCore/ecMacros.h>
-#include <foundCore/ecMath.h>
-#include <manipulator/ecIndManipulator.h>
-#include <manipulator/ecStatedSystem.h>
-#include <manipulator/ecStatedSystemStruct.h>
-*/
-
-/////////////////////////////////////////////////////////////////////////
-// Functions:    Big four and other header functions
-// Description:  Common functions
-/////////////////////////////////////////////////////////////////////////
+#include <iostream>
 
 CHansRobotStateObserver::CHansRobotStateObserver
 (
 const EcReal updateTimePeriod,
-EcU32  sampleSpacingFactor // = 8
+EcU32  sampleSpacingFactor // = 4
 ) :
 m_IsInitialized(EcFalse),
 m_SamplePeriod(updateTimePeriod),
@@ -99,17 +87,12 @@ const CHansRobotStateObserver& orig
 	return *this;
 }
 
-/////////////////////////////////////////////////////////////////////////
-//End of header functions
-/////////////////////////////////////////////////////////////////////////
-
 //------------------------------------------------------------------------------
 void CHansRobotStateObserver::setSamplingPeriod
 (
 const EcReal samplePeriod
 )
 {
-	// The sampling time period. This is the period at which the estimate method is called
 	m_SamplePeriod = samplePeriod;
 	m_IsInitialized = EcFalse;
 }
@@ -119,7 +102,6 @@ EcReal CHansRobotStateObserver::samplingPeriod
 (
 )
 {
-	// The sampling time period. This is the period at which the estimate method is called
 	return m_SamplePeriod;
 }
 
@@ -130,7 +112,6 @@ void CHansRobotStateObserver::setSampleSpacingFactor
 const EcU32 sampleSpacingFactor
 )
 {
-	// The sampling time period. This is the period at which the estimate method is called
 	m_SampleSpacingFactor = sampleSpacingFactor > 0 ? sampleSpacingFactor : 1;
 	m_IsInitialized = EcFalse;
 }
@@ -140,7 +121,6 @@ EcU32 CHansRobotStateObserver::sampleSpacingFactor
 (
 )
 {
-	// The sampling time period. This is the period at which the estimate method is called
 	return m_SampleSpacingFactor;
 }
 
@@ -151,13 +131,9 @@ EcBoolean CHansRobotStateObserver::initialize
 const EcRealVector& jointPositions
 )
 {
-	// The stencil spacing is the constant time difference (h) over which the finite differences are computed.
-	// It defines the spacing in time between the values used in the finite difference approximation ie f(x), f(x-h), f(x-2h)
-
 	m_StencilSpacing = m_SamplePeriod * m_SampleSpacingFactor;
 
-	//const EcReal defaultFilterTimeConstant = 0.016; // 16 milliseconds
-	const EcReal defaultFilterTimeConstant = 0.012; // 16 milliseconds
+	const EcReal defaultFilterTimeConstant = 0.012; // 12 milliseconds
 
 	// Initialize low-pass filters
 	m_PositionLowPassFilters.resize(jointPositions.size(), hansLowPassFilter(defaultFilterTimeConstant, m_SamplePeriod));
@@ -186,21 +162,30 @@ const EcRealVector& jointPositions
 	// Initialize values
 	const EcSizeT bufferSize = m_SampleSpacingFactor * m_StencileSize;
 	EcRealVector zeros;
-	zeros.assign(6, 0.0);
+	zeros.assign(jointPositions.size(), 0.0);
 	m_OldJointPositions.assign(bufferSize, jointPositions);
 	m_OldJointVelocity.assign(bufferSize, zeros);
 
-	m_OldAdmittanceDeviatePose.assign(bufferSize, zeros);
+	m_OldAdmittanceDeviatePose.assign(bufferSize, EcRealVector(6, 0.0));
 
 	m_OldDisturbanceTorques.assign(10, zeros);
 	m_OldJointCurrents.assign(currentMedianFilterCount, zeros);
-
+	m_previousMotorCurrent = zeros;
 	m_Index0 = 0;
 	m_Index1 = 1 * m_SampleSpacingFactor;
 	m_Index2 = 2 * m_SampleSpacingFactor;
 
 	m_IsInitialized = EcTrue;
+	b_previousUnNomalCurrentStatus = false;
+	m_lastUnNomalCount.assign(jointPositions.size(), 0);
+	m_errorDeltaThresholdCurrent = { 2,2,2,1.5,1.5,0.6 };
+	if (jointPositions.size() > 6) {
+		for (size_t i = 6; i < jointPositions.size(); ++i) {
+			m_errorDeltaThresholdCurrent.push_back(0.6);
+		}
+	}
 
+	b_is15066Stategy = false;
 	return m_IsInitialized;
 }
 
@@ -226,19 +211,6 @@ const EcRealVector& disturbanceTorqueTimeConstants
 		accelerationTimeConstants.size() != numJoints ||
 		motorCurrentTimeConstants.size() != numJoints ||
 		disturbanceTorqueTimeConstants.size() != numJoints
-		)
-	{
-		return EcFalse;
-	}
-
-	// check the filter sizes
-	if (
-		m_PositionLowPassFilters.size() != numJoints ||
-		m_VelocityLowPassFilters.size() != numJoints ||
-		m_AccelerationLowPassFilters.size() != numJoints ||
-		m_JerkLowPassFilters.size() != numJoints ||
-		m_MotorCurrentLowPassFilters.size() != numJoints ||
-		m_DisturbanceTorqueLowPassFilters.size() != numJoints
 		)
 	{
 		return EcFalse;
@@ -348,9 +320,6 @@ EcRealVector& estJointVelocities
 
 	estJointVelocities.resize(numJoints);
 
-	// 2nd order backward finite difference for velocity
-	//	f_x = ( 1*f[i-2] - 4*f[i-1] + 3*f[i+0] ) / (2*h)
-
 	for (EcSizeT ii = 0; ii < numJoints; ++ii)
 	{
 		estJointVelocities[ii] = (
@@ -393,9 +362,6 @@ EcRealVector& estJointAccelerations
 
 	estJointAccelerations.resize(numJoints);
 
-	//  2nd order backward finite difference for acceleration
-	//  	f_xx = ( 1*f[i-2] - 2*f[i-1] + 1*f[i+0] ) / (1*h^2)
-
 	for (EcSizeT ii = 0; ii < numJoints; ++ii)
 	{
 		estJointAccelerations[ii] = (
@@ -437,9 +403,6 @@ EcRealVector& estJointJerks
 
 	estJointJerks.resize(numJoints);
 
-	//  2nd order backward finite difference for acceleration
-	//  	f_xx = ( 1*f[i-2] - 2*f[i-1] + 1*f[i+0] ) / (1*h^2)
-
 	for (EcSizeT ii = 0; ii < numJoints; ++ii)
 	{
 		estJointJerks[ii] = (
@@ -461,7 +424,6 @@ void CHansRobotStateObserver::sortFunction
 EcRealVectorVector& sortArray
 )
 {
-	//std::sort(sortArray.begin(), sortArray.end());
 	const EcSizeT numCircle = sortArray.size();
 	EcU32 numJoints = sortArray[0].size();
 	for (EcSizeT ii = 0; ii < numJoints; ii++)
@@ -479,19 +441,18 @@ EcRealVectorVector& sortArray
 	}
 }
 
+
+void CHansRobotStateObserver::set15066Strategy(bool enable)
+{
+	b_is15066Stategy = enable;
+}
 //------------------------------------------------------------------------------
 EcBoolean CHansRobotStateObserver::filterMotorCurrents
 (
-const EcRealVector& motorCurrents,
-EcRealVector& filteredMotorCurrents
+	const EcRealVector& motorCurrents,
+	EcRealVector& filteredMotorCurrents
 )
 {
-	const EcSizeT numFiltered = m_MotorCurrentLowPassFilters.size();
-	if (numFiltered != motorCurrents.size())
-	{
-		return EcFalse;
-	}
-	// 加入一个中值滤波法（medianFilterCount个周期中，去掉最大和最小，剩下的取平均值）
 	m_OldJointCurrents.push_front(motorCurrents);
 	EcRealVectorVector tempArray;
 	EcU32 numCircle = m_OldJointCurrents.size();
@@ -501,10 +462,10 @@ EcRealVector& filteredMotorCurrents
 	}
 	sortFunction(tempArray);
 
+	const EcSizeT nj = motorCurrents.size();
 	EcRealVector tempCurrent;
-	
-	tempCurrent.assign(numFiltered, 0.);
-	for (EcSizeT i = 0; i < numFiltered; i++)
+	tempCurrent.assign(nj, 0.);
+	for (EcSizeT i = 0; i < nj; i++)
 	{
 		EcReal temp = 0.;
 		for (EcSizeT j = 2; j < numCircle - 2; j++)
@@ -513,14 +474,32 @@ EcRealVector& filteredMotorCurrents
 		}
 		tempCurrent[i] = temp / (numCircle - 4);
 	}
-
-	filteredMotorCurrents.resize(numFiltered);
-
-	for (EcSizeT ii = 0; ii < numFiltered; ++ii)
+	if (!b_is15066Stategy)
 	{
-		filteredMotorCurrents[ii] = m_MotorCurrentLowPassFilters[ii].updateOutput(tempCurrent[ii]);
+		filteredMotorCurrents = tempCurrent;
 	}
+	else {
+		filteredMotorCurrents = motorCurrents;
+		for (int i = 0; i < nj; i++)
+		{
+			if (fabs(motorCurrents[i] - m_previousMotorCurrent[i]) > m_errorDeltaThresholdCurrent[i] && m_lastUnNomalCount[i] > 5)
+			{
+				filteredMotorCurrents[i] = tempCurrent[i];
+				m_lastUnNomalCount[i] = 0;
+			}
 
+			if (m_lastUnNomalCount[i] < 3 || (fabs(motorCurrents[i] - m_previousMotorCurrent[i]) > m_errorDeltaThresholdCurrent[i] && m_lastUnNomalCount[i] < 4))
+			{
+				filteredMotorCurrents[i] = m_previousMotorCurrent[i];
+			}
+			else
+			{
+				m_previousMotorCurrent[i] = motorCurrents[i];
+			}
+			m_lastUnNomalCount[i]++;
+		}
+	}
+	
 	return EcFalse;
 }
 
@@ -599,7 +578,6 @@ const EcRealVector& disturbanceTorques,
 EcRealVector& meanDisturbanceTorques
 )
 {
-	//std::cout << "disturb torque: " << disturbanceTorques[0]<<",";
 	const EcSizeT numJoints = m_DisturbanceTorqueLowPassFilters.size();
 	if (numJoints != disturbanceTorques.size())
 	{
@@ -639,9 +617,7 @@ EcRealVector& meanDisturbanceTorques
 		}  
 		meanDisturbanceTorques[ii] = temp/(numCircle-4);
 	}
-	//std::cout << meanDisturbanceTorques[0] << std::endl;
 	m_OldDisturbanceTorques.push_front(disturbanceTorques);
-	//m_OldDisturbanceTorques.front();
 	return EcTrue;
 }
 
@@ -670,9 +646,6 @@ EcRealVector& estAdmittanceVelocity
 	}
 
 	estAdmittanceVelocity.resize(numJoints);
-
-	// 2nd order backward finite difference for velocity
-	//	f_x = ( 1*f[i-2] - 4*f[i-1] + 3*f[i+0] ) / (2*h)
 
 	for (EcSizeT ii = 0; ii < numJoints; ++ii)
 	{

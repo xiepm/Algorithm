@@ -1,14 +1,6 @@
 #include "urDynamics.h"
 #include <iostream>
 
-// 说明：
-// 这个文件与 elfinDynamics.cpp 的结构基本一致，
-// 主要区别在于：
-// 1. 使用的几何参数不同
-// 2. 符号展开后的公式不同
-// 3. 适用的机器人结构不同
-
-/// @brief 构造 UR 动力学对象并填入默认值。
 urDynamics::urDynamics()
 {
 	m_NumJoints = 6;
@@ -16,7 +8,7 @@ urDynamics::urDynamics()
 	m_gy = 0;
 	m_gz = -9.81;
 
-	m_d1 = 0.220;		//默认设置为ElfinV5的杆长参数；
+	m_d1 = 0.220;		//Ĭ������ΪElfinV5�ĸ˳�������
 	m_d2 = 0.420;
 	m_d3 = 0.420;
 	m_d4 = 0.420;
@@ -31,7 +23,6 @@ urDynamics::urDynamics()
 }
 
 
-/// @brief 析构函数。
 urDynamics::~urDynamics()
 {
 
@@ -44,8 +35,6 @@ void urDynamics::setRobotDHParameters
 	const EcRealVector& kinematcisParam
 )
 {
-	// UR 版本按 [d1, d2, d3, d4, d5, d6, a2, a3] 读取参数。
-	// 内部会将 a2/a3 取负保存，这是该模型坐标约定的一部分。
 	m_d1 = kinematcisParam[0];
 	m_d2 = kinematcisParam[1];
 	m_d3 = kinematcisParam[2];
@@ -61,7 +50,6 @@ void urDynamics::setGravityVector
 	const EcReal gx, const EcReal gy, const EcReal gz
 )
 {
-	// 用于适配不同安装姿态或不同世界坐标系下的重力方向。
 	m_gx = gx;
 	m_gy = gy;
 	m_gz = gz;
@@ -74,27 +62,11 @@ void urDynamics::calculateGravityJointTorques
 	EcRealVector& tau
 )
 {
-	// 通过完整模型 + 零速度/零加速度的方式复用计算逻辑，得到纯重力项。
 	calculateEstimateJointToqrues(q, m_zeros, m_zeros, parms, tau);
 }
 
 
-/// @brief 计算 UR 的完整关节估计力矩。
-///
-/// 使用示例：
-/// @code
-/// urDynamics dyn;
-/// dyn.setRobotDHParameters({d1, d2, d3, d4, d5, d6, a2, a3});
-/// dyn.setGravityVector(0.0, 0.0, -9.81);
-///
-/// EcRealVector tau(6, 0.0);
-/// EcBoolean ok = dyn.calculateEstimateJointToqrues(q, dq, ddq, parms, tau);
-/// @endcode
-///
-/// 注意：
-/// - `q/dq/ddq` 必须是 6 维
-/// - `tau` 最好预分配为 6 维
-/// - `parms` 长度需要和动力学参数模型一致
+// calculate forward dynamics of elfin
 EcBoolean urDynamics::calculateEstimateJointToqrues
 (
 	const EcRealVector& q,
@@ -111,8 +83,6 @@ EcBoolean urDynamics::calculateEstimateJointToqrues
 	{
 		return false;
 	}
-	// 下面是自动展开后的 UR 动力学主计算区。
-	// 阅读建议与 Elfin 版本相同：先看输入输出约束，再看 tau 的组成。
 	double x0 = cos(q[1]);
 	double x1 = sin(q[1]);
 	double x2 = -m_a2 * ((x0) * (x0)) - m_a2 * ((x1) * (x1));
@@ -347,7 +317,9 @@ EcBoolean urDynamics::calculateEstimateJointToqrues
 	tau[4] = ddq[4] * parms[62] + dq[4] * parms[63] + parms[64] * sign(dq[4]) + x193;
 	tau[5] = ddq[5] * parms[75] + dq[5] * parms[76] + parms[77] * sign(dq[5]) + x200;
 
-	// 温度对粘性摩擦的修正，逻辑与 Elfin 版本一致。
+	// 
+	// �����¶ȶ�ճ��Ħ�����ص�Ӱ��
+	//		��45��C��Ϊ�ο���׼��
 	EcRealVector temperatureFactor(6);
 	for (int i = 0; i < m_NumJoints; i++)
 	{
@@ -359,13 +331,7 @@ EcBoolean urDynamics::calculateEstimateJointToqrues
 }
 
 
-/// @brief 计算给动量观测器使用的简化力矩。
-///
-/// 该函数更偏向“观测模型”，不是完整驱动力矩模型。
-/// 常用于：
-/// - 扰动力矩估计
-/// - 碰撞检测
-/// - 动量观测器内部计算
+// exclude gravity, friction, motor inertia;
 void urDynamics::calculateMomentumEstimatedJointTorques
 (
 	const EcRealVector& q,
@@ -375,7 +341,6 @@ void urDynamics::calculateMomentumEstimatedJointTorques
 	EcRealVector& tau
 )
 {
-	// 下面同样是自动展开后的符号表达式。
 	double x0 = sin(q[1]);
 	double x1 = dq[0] * x0;
 	double x2 = -parms[18];
@@ -602,4 +567,15 @@ void urDynamics::calculateMomentumEstimatedJointTorques
 
 	//
 	return;
+}
+
+
+void urDynamics::calculateJointFricition(const EcRealVector& dq, const EcRealVector& parms, EcReal coeffColomb, EcReal coeffViscous, EcRealVector& tau)
+{
+	tau[0] = coeffViscous * dq[0] * parms[11] + coeffColomb * parms[12] * sign(dq[0]);
+	tau[1] = coeffViscous * dq[1] * parms[24] + coeffColomb * parms[25] * sign(dq[1]);
+	tau[2] = coeffViscous * dq[2] * parms[37] + coeffColomb * parms[38] * sign(dq[2]);
+	tau[3] = coeffViscous * dq[3] * parms[50] + coeffColomb * parms[51] * sign(dq[3]);
+	tau[4] = coeffViscous * dq[4] * parms[63] + coeffColomb * parms[64] * sign(dq[4]);
+	tau[5] = coeffViscous * dq[5] * parms[76] + coeffColomb * parms[77] * sign(dq[5]);
 }

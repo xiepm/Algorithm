@@ -1,5 +1,5 @@
-﻿#include "momentumObserver.h"
-//#include "momentumObserver\momentumObserver.h"
+#include "momentumObserver.h"
+#include <iostream>
 
 std::shared_ptr<momentumObserver> momentumObserver::create
 (
@@ -35,24 +35,25 @@ EcBoolean momentumObserver::initializeStates
 	const int robotType
 )
 {
-	// 与协作算法主入口保持同一套机型编号，避免观测器和主流程选择不同动力学模型。
-	if (robotType == 1)
+	if (robotType == 1 || robotType == 3 || robotType == 8 || robotType == 10)
 		m_dynBase.reset(new urDynamics);
 	else if (robotType == 20)
-		m_dynBase.reset(new sevendofDynamics);
+		m_dynBase.reset(new anthorDynamics);
 	else
 		m_dynBase.reset(new elfinDynamics);
 	m_NumJoints = jointPositions.size();
-	m_KObserverCoeff = 50.0;
+	m_KObserverCoeff = 50.0;			//	降低敏感度
 	m_jointPosition = jointPositions;
 	m_zeros.assign(m_NumJoints, 0.0);
 	m_linkSideTorques.assign(m_NumJoints, 0.0);
-	m_v1.assign(m_NumJoints, 0.0);	m_v1[0] = 1;
-	m_v2.assign(m_NumJoints, 0.0);	m_v2[1] = 1;
-	m_v3.assign(m_NumJoints, 0.0);	m_v3[2] = 1;
-	m_v4.assign(m_NumJoints, 0.0);	m_v4[3] = 1;
-	m_v5.assign(m_NumJoints, 0.0);	m_v5[4] = 1;
-	m_v6.assign(m_NumJoints, 0.0);	m_v6[5] = 1;
+	
+	// Pre-allocate vectors for mass matrix calculation
+	m_v1.assign(m_NumJoints, 0.0); if (m_NumJoints > 0) m_v1[0] = 1;
+	m_v2.assign(m_NumJoints, 0.0); if (m_NumJoints > 1) m_v2[1] = 1;
+	m_v3.assign(m_NumJoints, 0.0); if (m_NumJoints > 2) m_v3[2] = 1;
+	m_v4.assign(m_NumJoints, 0.0); if (m_NumJoints > 3) m_v4[3] = 1;
+	m_v5.assign(m_NumJoints, 0.0); if (m_NumJoints > 4) m_v5[4] = 1;
+	m_v6.assign(m_NumJoints, 0.0); if (m_NumJoints > 5) m_v6[5] = 1;
 
 	m_M1.assign(m_NumJoints, 0.0);
 	m_M2.assign(m_NumJoints, 0.0);
@@ -83,6 +84,7 @@ EcBoolean momentumObserver::initializeStates
 	m_dynamicsParam.assign(10 * m_NumJoints, 0.);
 	m_dynamicsFullParam.assign(13 * m_NumJoints, 0.);
 	m_moterSideParams.assign(3 * m_NumJoints, 0.);
+	b_is15066Strategy = false;
 
 	m_highPassFilter.setOldData(m_zeros);
 	m_filtedObserverTorques = m_zeros;
@@ -112,7 +114,7 @@ EcBoolean momentumObserver::setDynamicsParameters(const EcRealVector& dynamicsPa
 	}
 	m_dynamicsFullParam = dynamicsParam;
 
-	for (EcSizeT i = 0; i < 6; i++)
+	for (EcSizeT i = 0; i < m_NumJoints; i++)
 	{
 		for (EcSizeT j = 0; j < 10; j++)
 		{
@@ -123,11 +125,13 @@ EcBoolean momentumObserver::setDynamicsParameters(const EcRealVector& dynamicsPa
 			m_moterSideParams[i * 3 + j] = dynamicsParam[i * 13 + 10 + j];	// motor inertia, viscous and coulomb friction;
 		}
 	}
-	for (EcSizeT i = 0; i < 6; i++)
+	for (EcSizeT i = 0; i < m_NumJoints; i++)
 	{
 		m_coulombFriction[i] = m_moterSideParams[i * 3 + 2];
 	}
-	for (EcSizeT i = 0; i < 3; i++)
+	
+	// Adjust coulomb friction for pairs of joints if applicable
+	for (EcSizeT i = 0; i < m_NumJoints / 2; i++)
 	{
 		m_coulombFriction[i * 2] = (m_moterSideParams[i * 2] > m_moterSideParams[i * 2 + 1]) ? m_moterSideParams[i * 2] : m_moterSideParams[i * 2 + 1];
 		m_coulombFriction[i * 2 + 1] = m_coulombFriction[i * 2];
@@ -157,6 +161,8 @@ void momentumObserver::setCollisionThreshold
 )
 {
 	m_collisionThreshold = threshold;
+	for (int i = 0; i < m_collisionThreshold.size(); i++)
+		m_collisionThreshold[i] *= 1.2;
 }
 
 void momentumObserver::setDynamicsFactorThreshold
@@ -197,12 +203,12 @@ void momentumObserver::calculateDynamicsThreshold
 	{
 		if (fabs(m_jointVel[i]) < LOWLEVELVELOCITY)
 		{
-			if (fabs(m_jointVel[i]) < 0.03)		//速度从零开始跳变时，扰动误差大；
-				m_dynamicCollisionThreshold[i] = m_collisionThreshold[i] + m_coulombFriction[i] * 3.0;
+			if (fabs(m_jointVel[i]) < 0.087)		//速度从零开始跳变时，扰动误差大；
+				m_dynamicCollisionThreshold[i] = m_collisionThreshold[i] + m_coulombFriction[i] * 4.0;
 			else
-				m_dynamicCollisionThreshold[i] = m_collisionThreshold[i] + m_coulombFriction[i] * 1.25;			//todo：这里的计算会导致后面的速度依然会增加这个数值；
+				m_dynamicCollisionThreshold[i] = m_collisionThreshold[i] + m_coulombFriction[i] * 3.0;			//todo：这里的计算会导致后面的速度依然会增加这个数值；
 		}
-		m_dynamicCollisionThreshold[i] += m_dynamicsFactorThresholds[i];
+		m_dynamicCollisionThreshold[i] += m_dynamicsFactorThresholds[i];		// 加上动态负载的影响
 	}
 
 }
@@ -251,8 +257,6 @@ void momentumObserver::getJointCollisionState
 			if (fabs(m_ObserverTorque[i]) > m_collisionThreshold[i])
 			{
 				jointCollisionState[i] = true;
-				//std::cout << "Collision Momentum Observer: joint" << i + 1 << " (vel:" << m_jointVel[i] << ")"
-				//	<< "(f: " << m_filtedObserverTorques[i] << ")" << "(raw:" << m_ObserverTorque[i] << ") dynThresh:" <<m_dynamicCollisionThreshold[i]<< std::endl;
 			}
 			else {
 				jointCollisionState[i] = false;
@@ -319,18 +323,15 @@ void momentumObserver::calculateMassMatrix
 	EcRealVectorVector& massMatrix
 )
 {
-	m_dynBase->calculateMomentumEstimatedJointTorques(q, m_zeros, m_v1, m_dynamicsParam, m_M1);
-	m_dynBase->calculateMomentumEstimatedJointTorques(q, m_zeros, m_v2, m_dynamicsParam, m_M2);
-	m_dynBase->calculateMomentumEstimatedJointTorques(q, m_zeros, m_v3, m_dynamicsParam, m_M3);
-	m_dynBase->calculateMomentumEstimatedJointTorques(q, m_zeros, m_v4, m_dynamicsParam, m_M4);
-	m_dynBase->calculateMomentumEstimatedJointTorques(q, m_zeros, m_v5, m_dynamicsParam, m_M5);
-	m_dynBase->calculateMomentumEstimatedJointTorques(q, m_zeros, m_v6, m_dynamicsParam, m_M6);
-	massMatrix[0] = m_M1;
-	massMatrix[1] = m_M2;
-	massMatrix[2] = m_M3;
-	massMatrix[3] = m_M4;
-	massMatrix[4] = m_M5;
-	massMatrix[5] = m_M6;
+	massMatrix.assign(m_NumJoints, EcRealVector(m_NumJoints, 0.0));
+	EcRealVector ei(m_NumJoints, 0.0);
+	for (size_t i = 0; i < m_NumJoints; ++i) {
+		ei.assign(m_NumJoints, 0.0);
+		ei[i] = 1.0;
+		EcRealVector Mi(m_NumJoints, 0.0);
+		m_dynBase->calculateMomentumEstimatedJointTorques(q, m_zeros, ei, m_dynamicsParam, Mi);
+		massMatrix[i] = Mi;
+	}
 }
 
 void momentumObserver::calculateBetaQuantity
@@ -343,7 +344,6 @@ void momentumObserver::calculateBetaQuantity
 	beta = m_zeros;
 	m_dynBase->calculateMomentumEstimatedJointTorques(q, dq, m_zeros, m_dynamicsParam, m_NE0);
 	m_dynBase->calculateGravityJointTorques(q, m_dynamicsFullParam, m_gravityTau);		// 计算重力
-	//m_dynBase->calculateMomentumGravityTorques(q, m_dynamicsParam, m_gravityTau);		// 计算重力
 
 	for (EcSizeT i = 0; i < m_NumJoints; i++)
 	{

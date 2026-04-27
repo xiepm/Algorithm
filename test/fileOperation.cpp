@@ -41,6 +41,8 @@ bool fileOperation(string filePath, EcRealVector& time, EcRealVectorVector& q)
 {
 	EcRealVector zeros, q1(6), dq1(6), ddq1(6), sensedTorques1(6), estimateTorques1(6);
 	zeros.assign(6,0.0);
+	//��ȡcsv����
+	//ifstream iFile("D:\\DATA\\VS\\ElfinIdentifier\\data.csv");
 	ifstream iFile(filePath);
 
 	string row;
@@ -76,6 +78,8 @@ bool fileOperation2(string filePath, EcRealVector& time, EcRealVectorVector& q)
 {
 	EcRealVector zeros, q1(6), dq1(6), ddq1(6), sensedTorques1(6), estimateTorques1(6);
 	zeros.assign(6, 0.0);
+	//��ȡcsv����
+	//ifstream iFile("D:\\DATA\\VS\\ElfinIdentifier\\data.csv");
 	ifstream iFile(filePath);
 
 	string row;

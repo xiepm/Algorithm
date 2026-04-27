@@ -162,11 +162,24 @@ void frictionModel::initialize(const EcRealVector& currentJointPosition, const E
 
 	// 预判启动
 	predictiveStartTorque temp;
-	m_predictiveTorque.resize(numofJoints);
-	for (size_t i = 0; i < numofJoints; i++)
+	m_predictiveTorque.resize(m_NumJoints);
+	for (size_t i = 0; i < m_NumJoints; i++)
 	{
 		m_predictiveTorque[i].initialize(updateTimePeriod);
 	}
+
+	// 双编处理
+	b_dualEncoderAssistFlag = false;
+	m_dualEncoderDiffWindows.assign(m_NumJoints, SlidingWindow());
+	int windowSize = 0.5 / updateTimePeriod;		// 500ms的窗口
+	int middleSize = 0.2 / updateTimePeriod;		// 200ms的窗口
+	for (int i = 0; i < m_NumJoints; i++) {
+		m_dualEncoderDiffWindows[i].setWindowSize(windowSize, middleSize);
+	}
+	m_dualCompensateFactor.assign(m_NumJoints, 1.0);
+	//m_dualDiffEncoderThd.assign(m_NumJoints, 0.001);		// lara
+	m_dualDiffEncoderThd.assign(m_NumJoints, 0.003);		// Elfin
+	//m_dualDiffEncoderThd = { 0.003,0.003,0.003,0.003,0.003,0.003 };
 }
 
 
@@ -178,7 +191,6 @@ void frictionModel::setFrictionParams
 {
 	m_coulombFricton = coulombFriction;
 	m_viscousFrictionCoeff = viscousFrictionCoeff;
-
 
 	for (int ii = 0; ii < m_NumJoints; ii++)
 	{
@@ -203,6 +215,10 @@ void frictionModel::setCompensateFactor
 			m_constraintDynCompensateFactor[ii] = 0.5 / compensateFactor[ii];
 		}
 	}
+}
+
+void frictionModel::setDynFrictionCompensateFactor(const EcRealVector& factor) {
+	m_dynViscousCompensateFactor = factor;
 }
 
 void frictionModel::setStartCompensateFrictionFactor(
@@ -231,6 +247,13 @@ void frictionModel::setMaxJointVelocitiesInAssistiveMode
 	m_maxJointVelocities = maxJointVelocities;
 }
 
+void frictionModel::updateDualEncoder(const EcRealVector& jointSidePosition, const EcRealVector& motorSidePosition) {
+	for (int i = 0; i < jointSidePosition.size(); i++) {
+		m_dualEncoderDiffWindows[i].addValue(jointSidePosition[i] - motorSidePosition[i]);
+	}
+
+}
+
 void frictionModel::calculateCompensateFriction
 (
 	const EcRealVector& currentJointPosition,
@@ -251,22 +274,44 @@ void frictionModel::calculateCompensateFriction
 	for (EcU32 ii = 0; ii < m_NumJoints; ii++)
 	{
 		sumVel += fabs(currentJointVel[ii]);
+		EcBoolean dualState = false;
 		if (fabs(currentJointVel[ii]) < zeroVelocityThresholds)			//1.7°			  预滑动状态；
 		{
-			if (m_stopStateTime >= m_stopGenerateFrictTime || driveBackMode)
+			if (m_stopStateTime >= m_stopGenerateFrictTime || driveBackMode || b_dualEncoderAssistFlag)
 			{
 				m_calcCoulombFriction[ii] = 0;		// 处于碰撞反弹模式，或者持续抖动2min后，不提供库伦摩擦力；
+
+				if (!driveBackMode && b_dualEncoderAssistFlag)
+				{
+					EcReal diffDual = m_dualEncoderDiffWindows[ii].getDifference(m_dualDiffEncoderThd[ii]);
+					//if(ii==1)
+					//	std::cout << ii << "," << diffDual << std::endl;
+					if (fabs(diffDual)> m_dualDiffEncoderThd[ii] && fabs(diffDual) < 1)
+					{
+						m_calcCoulombFriction[ii] = 0.75 * m_dualCompensateFactor[ii] * KDL::sign(diffDual) * m_coulombFricton[ii];				// 0.75应作为一个参数，可以被调节；
+						dualState = true;
+						//std::cout << "joint1 coulomb:" << diffDual << "," <<m_dualCompensateFactor[ii]<< "," << currentJointVel[ii] << "," << m_calcCoulombFriction[ii] << std::endl;
+					}
+				}
 			}
 			else {
 				generateDitherSignal(ii, currentJointPosition, currentJointVel, sensedTorque);
+				m_calcCoulombFriction[ii] = 0;
+
 			}
 		}
 		else if (fabs(currentJointVel[ii]) < lowVelocityThresholds)							 // 低速隔离带，降低补偿阈值，避免抖动引发运动；
 		{
-			b_activeDitherStatus[ii] = true;
-			m_calcCoulombFriction[ii] = m_compensateConfigFactor[ii] * 0.75 * pow(fabs(currentJointVel[ii]) / lowVelocityThresholds, 0.70) * KDL::sign(currentJointVel[ii]) * m_coulombFricton[ii];
-			//std::cout << "dither(p,F,dynC,V,mV,acc)," << currentJointPosition[ii] << "," << m_calcCoulombFriction[ii] << "," << m_dynCompensateFactor[ii]
-			//	<< "," << currentJointVel[ii] << "," << m_jointPreMeanVel[ii] << "," << currentJointAcc[ii] << std::endl;
+			if (!b_dualEncoderAssistFlag) {
+				b_activeDitherStatus[ii] = true;
+				m_calcCoulombFriction[ii] = m_compensateConfigFactor[ii] * 0.75 * pow(fabs(currentJointVel[ii]) / lowVelocityThresholds, 0.70) * KDL::sign(currentJointVel[ii]) * m_coulombFricton[ii];
+				//std::cout << "dither(p,F,dynC,V,mV,acc)," << currentJointPosition[ii] << "," << m_calcCoulombFriction[ii] << "," << m_dynCompensateFactor[ii]	<< "," << currentJointVel[ii] << "," << m_jointPreMeanVel[ii] << "," << currentJointAcc[ii] << std::endl;
+			}
+			else {
+				m_calcCoulombFriction[ii] =  m_compensateConfigFactor[ii] * KDL::sign(currentJointVel[ii]) * m_coulombFricton[ii];
+
+			}
+			
 		}
 		else
 		{																					// 高速状态；
@@ -285,9 +330,10 @@ void frictionModel::calculateCompensateFriction
 	else {
 		m_stopStateTime = 0;
 	}
-	dynamicConstrainCompensateFriction(currentJointVel, currentJointAcc);
-
+	// dynamicConstrainCompensateFriction(currentJointVel, currentJointAcc);  // 没有使用
 	compensateCoulombFriction = m_calcCoulombFriction;
+
+	///std::cout << "j2:vel,factor,c,fv:" << currentJointVel[1] << "," << m_compensateConfigFactor[1] << "," << compensateCoulombFriction[1] << "," << compensateViscousFriction[1] << std::endl;
 }
 
 

@@ -1,31 +1,20 @@
+
 #include "fileOperation.h"
 #include <iostream>
-#include <string>
-#include "src/HMCollaborativeRobotAlgorithm.h"
-#include "sevendofDynamics.h"
-
-namespace
-{
-std::string testFilePath(const std::string& fileName)
-{
-	std::string sourcePath = __FILE__;
-	std::string::size_type slashPos = sourcePath.find_last_of("/\\");
-	std::string baseDir = (slashPos == std::string::npos) ? "." : sourcePath.substr(0, slashPos);
-	return baseDir + "/" + fileName;
-}
-}
+#include "HMCollaborativeRobotAlgorithm.h"
+#include "testHRC.h"
 
 void testLostData()
 {
 	std::shared_ptr<CHansCollaborativeAlgorithm> m_cobotAlgorithm;
 	EcRealVector jointPosition(6);
 
-	std::string fileRead = testFilePath("verifyData.csv");
+std:string fileRead = "/home/peng/HansRobotLib/RTOSAlgorithm/test/verifyData.csv";
 	EcRealVectorVector data;
 	fileDataRead(fileRead, 25, data);           // 这个例子中没有使用；
 
 	// write data
-	std::string filePath = testFilePath("output.csv");
+	std::string filePath = "/home/peng/HansRobotLib/RTOSAlgorithm/test/output.csv";
 	ofstream oFile;
 	oFile.open(filePath, ios::out | ios::trunc);
 
@@ -89,12 +78,12 @@ void testElfinDyn()
 	std::shared_ptr<CHansCollaborativeAlgorithm> m_cobotAlgorithm;
 	EcRealVector jointPosition(6);
 
-	std::string fileRead = testFilePath("verifyData.csv");
+std:string fileRead = "/home/peng/HansRobotLib/RTOSAlgorithm/test/verifyData.csv";
 	EcRealVectorVector data;
 	fileDataRead(fileRead, 25, data);           // 这个例子中没有使用；
 
 	// write data
-	std::string filePath = testFilePath("output.csv");
+	std::string filePath = "/home/peng/HansRobotLib/RTOSAlgorithm/test/output.csv";
 	ofstream oFile;
 	oFile.open(filePath, ios::out | ios::trunc);
 
@@ -165,18 +154,16 @@ void testElfinDyn()
 	std::cout << "exit." << std::endl;
 }
 
-
-int main(int argc, char* argv[])
-{
+int testDyn() {
 	std::shared_ptr<CHansCollaborativeAlgorithm> m_cobotAlgorithm;
 	EcRealVector jointPosition(6);
 
-	std::string fileRead = testFilePath("verifyData.csv");
+std:string fileRead = "/home/peng/HansRobotLib/RTOSAlgorithm/test/verifyData.csv";
 	EcRealVectorVector data;
 	fileDataRead(fileRead, 25, data);           // 这个例子中没有使用；
 
 	// write data
-	std::string filePath = testFilePath("output.csv");
+	std::string filePath = "/home/peng/HansRobotLib/RTOSAlgorithm/test/output.csv";
 	ofstream oFile;
 	oFile.open(filePath, ios::out | ios::trunc);
 
@@ -253,44 +240,10 @@ int main(int argc, char* argv[])
 	return 0;
 }
 
-void testSevendofDyn()
+
+int main(int argc, char* argv[])
 {
-	std::cout << "=== Testing sevendofDynamics (7-DOF) ===" << std::endl;
-
-	sevendofDynamics dyn;
-
-	dyn.setGravityVector(9.81, 0.0, 0);
-	std::cout << "Gravity vector set." << std::endl;
-
-	EcRealVector q(7, 0.0);
-	EcRealVector dq(7, 0.0);
-	EcRealVector ddq(7, 0.0);
-	EcRealVector parms(91, 1.0);
-	EcRealVector tau(7, 0.0);
-
-	q[0] = 0.1; q[1] = 0.2; q[2] = 0.3; q[3] = 0.4;
-	q[4] = 0.5; q[5] = 0.6; q[6] = 0.7;
-
-	dyn.calculateGravityJointTorques(q, parms, tau);
-	std::cout << "Gravity torques: ";
-	for (int i = 0; i < 7; i++) {
-		std::cout << tau[i] << " ";
-	}
-	std::cout << std::endl;
-
-	EcBoolean ok = dyn.calculateEstimateJointToqrues(q, dq, ddq, parms, tau);
-	std::cout << "Estimate torques (ok=" << ok << "): ";
-	for (int i = 0; i < 7; i++) {
-		std::cout << tau[i] << " ";
-	}
-	std::cout << std::endl;
-
-	dyn.calculateMomentumEstimatedJointTorques(q, dq, ddq, parms, tau);
-	std::cout << "Momentum torques: ";
-	for (int i = 0; i < 7; i++) {
-		std::cout << tau[i] << " ";
-	}
-	std::cout << std::endl;
-
-	std::cout << "=== sevendofDynamics test completed ===" << std::endl;
+	testHRC();
+	
+	return 0;
 }

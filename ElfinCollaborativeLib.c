@@ -226,6 +226,28 @@ void CDECL CDECL_EXT resetcobotstatus(resetcobotstatus_struct* p)
 	resetCobotStatus();
 }
 
+void CDECL CDECL_EXT set15066strategy(set15066strategy_struct* p)
+{
+	set15066StrategyInterface(p->enable);
+}
+
+void CDECL CDECL_EXT updatedualencoderjointposition(updatedualencoderjointposition_struct* p)
+{
+	updateDualEncoderJointPosition(p->motorSideJointPosition, p->jointSideJointPosition);
+}
+
+void CDECL CDECL_EXT enableaugmentedassistivemodeindualencoder(enableaugmentedassistivemodeindualencoder_struct* p)
+{
+	setAssistDualEncoderFlag(p->enable);
+}
+
+void CDECL CDECL_EXT setaugmentedthdindualencoder(setaugmentedthdindualencoder_struct* p)
+{
+	setDualDiffEncoderThd(p->jointThd);
+}
+
+
+
 
 void CDECL CDECL_EXT setactutordampconstants(setactutordampconstants_struct* p)
 {
@@ -342,17 +364,47 @@ void CDECL CDECL_EXT updatej3j5accelerometer(updatej3j5accelerometer_struct* p)
 
 }
 
+<<<<<<< HEAD
+=======
+void CDECL CDECL_EXT updateforcesensordata(updateforcesensordata_struct* p)
+{
+	updateForceSensorData(p->enable, p->calibedForce);
+}
+
+void CDECL CDECL_EXT updateforcesensorforfocecontrol(updateforcesensorforfocecontrol_struct* p)
+{
+	updateForceSensorForFoceControl(p->enable, p->calibedForce);
+}
+
+/*
+void CDECL CDECL_EXT getgravitytorqueforflexiblecompensate(getgravitytorqueforflexiblecompensate_struct* p)
+{
+
+}
+*/
+
+>>>>>>> 40f7afc7711530af2c9319aaedf0d2aa15dee117
 void CDECL CDECL_EXT getflexiblecompensatetorque(getflexiblecompensatetorque_struct* p)
 {
 	getGravityTorqueForFlexibleCompensate(p->jointPosition, p->flexibleCompensateTorque);
 }
 
+<<<<<<< HEAD
 void CDECL CDECL_EXT updateforcesensordata(updateforcesensordata_struct* p)
 {
 
+=======
+void CDECL CDECL_EXT getinertiaofjoint(getinertiaofjoint_struct* p)
+{
+	getJointInertia(p->jointPosition, p->jointInertia);
+>>>>>>> 40f7afc7711530af2c9319aaedf0d2aa15dee117
 }
 
 void CDECL CDECL_EXT updateexternalaxisstate(updateexternalaxisstate_struct* p)
 {
 
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> 40f7afc7711530af2c9319aaedf0d2aa15dee117

@@ -1,4 +1,4 @@
-﻿#include "HMCollaborativeRobotAlgorithm.h"
+#include "HMCollaborativeRobotAlgorithm.h"
 //#include "EcOs.h"
 
 
@@ -14,7 +14,6 @@ std::shared_ptr<CHansCollaborativeAlgorithm> CHansCollaborativeAlgorithm::create
 	std::shared_ptr<CHansCollaborativeAlgorithm> pCollaborativeTool;
 
 	pCollaborativeTool.reset(new CHansCollaborativeAlgorithm(updateTimePeriod));
-	pCollaborativeTool->m_NumJoints = jointPositions.size();
 
 	if (pCollaborativeTool)
 	{
@@ -30,19 +29,23 @@ CHansCollaborativeAlgorithm::CHansCollaborativeAlgorithm
 ) :
 	m_StateEstimator(updateTimePeriod),
 	m_commandStateEstimator(updateTimePeriod)
-	//m_hmAlgorithm(0)
 {
 	m_updateTimePeriod = updateTimePeriod;
 	m_stopGenerateFrictCounts = 2.0 * 60.0;
 	m_stopStateTimeCounts = 0;
-	//m_sensorlessAdmitControl = CAdmittancePositionController::create(updateTimePeriod);
+	
 	EcRealVector b = { 0.9922, -0.9922 };
 	EcRealVector a = { 1, -0.9844 };
 	m_momentumObserver = momentumObserver::create(updateTimePeriod, b, a);
+	m_momentumObserverActual = momentumObserver::create(updateTimePeriod, b, a);
 
 	m_prePayloadMass = 0.0;
+	m_centerofMass.assign(3, 0.0);
 	b_newPayLoadStatus = false;
 	m_payloadCount = 1;
+	b_logFlag = true;
+	b_enableEEWrenchFeedForward = false;
+	m_NumJoints = 0; 
 }
 
 CHansCollaborativeAlgorithm::~CHansCollaborativeAlgorithm()
@@ -55,22 +58,43 @@ EcBoolean CHansCollaborativeAlgorithm::initializeStates
 	const int robotType
 )
 {
-	if (jointPositions.size() != m_NumJoints)
+	m_NumJoints = jointPositions.size();
+	if (m_NumJoints == 0)
 	{
 		m_IsInitialized = EcFalse;
 		return EcFalse;
 	}
-	// 机型约定：
-	// 1 -> UR 六轴
-	// 2 -> 七轴机型（当前动力学为占位实现）
-	// other -> Elfin 六轴
-	if (robotType == 1)
-		m_dynBase.reset(new urDynamics);
-	else if (robotType == 20)
-		m_dynBase.reset(new sevendofDynamics);
-	else
-		m_dynBase.reset(new elfinDynamics);
 
+	switch (robotType)
+	{
+	default:
+	case 0:
+	case 2:
+	case 7:
+	case 9:
+		m_dynBase.reset(new elfinDynamics);
+		m_kinBase.reset(new elfinKinematics);
+		break;
+	case 1:
+	case 3:
+	case 8:
+	case 10:
+		m_dynBase.reset(new urDynamics);
+		m_kinBase.reset(new URKinematics);
+		break;
+	case 5:
+		m_dynBase.reset(new palletDynamics);
+		m_kinBase.reset(new palletKinematics);
+		break;
+	case 12:
+		m_dynBase.reset(new dsDynamics);
+		m_kinBase.reset(new DSKinematics);
+		break;
+	case 20:
+		m_dynBase.reset(new anthorDynamics);
+		m_kinBase.reset(new DSKinematics);
+		break;
+	}
 	m_robotType = robotType;
 
 	m_logStatus = true;
@@ -78,9 +102,16 @@ EcBoolean CHansCollaborativeAlgorithm::initializeStates
 	m_currentTime = 0.0;
 	b_isUsingMomentumObserver = EcFalse;
 	m_momentumObserver->initializeStates(jointPositions, robotType);
+	m_momentumObserverActual->initializeStates(jointPositions, robotType);
 	m_frictionModel.initialize(jointPositions, m_updateTimePeriod);
+	
+	m_feedForwardAccTorqueRatio.assign(m_NumJoints, 1.0);
+	m_FeedAccTorque.assign(m_NumJoints, 0.0);
+	m_jointTorqueFromEEForce.assign(m_NumJoints, 0.0);
 	m_startCompensateFrictionFactor.assign(m_NumJoints, 1.0);
+	m_torqueConstant.assign(m_NumJoints, 1.0);
 
+	m_savedCollisionStopStatus.assign(m_NumJoints, EcFalse);
 	m_driveBackTorques.assign(m_NumJoints, 0.);
 	m_driveBackStatus.assign(m_NumJoints, EcFalse);
 	m_driveBackBrakingStatus.assign(m_NumJoints, EcFalse);
@@ -88,54 +119,62 @@ EcBoolean CHansCollaborativeAlgorithm::initializeStates
 	m_AdjustedTorqueConstants.assign(m_NumJoints, 1.0);
 	m_MaxActutorTorques.assign(m_NumJoints, 0.0);
 	m_MaxActutorCurrents.assign(m_NumJoints, 1.0);
+	m_previousFeedforwardCurrent.assign(m_NumJoints, 0.0);
 
-	//m_sensorlessAdmitControl->initializeStates();
-	b_isSensorlessAdmittanceMode = EcFalse;
 	m_FilteredJointPositions = jointPositions;
 	m_FilteredJointVelocities.assign(m_NumJoints, 0.0);
+	m_FilteredActualJointVelocities.assign(m_NumJoints, 0.0);
 	m_FilteredJointAccelerations.assign(m_NumJoints, 0.0);
 
+	m_lockJointEstimateStatus = 30;
 	m_FilteredCommandJointPositions = jointPositions;
 	m_FilteredCommandJointVelocities.assign(m_NumJoints, 0.0);
 	m_FilteredCommandJointAccelerations.assign(m_NumJoints, 0.0);
 
 	m_FilteredMotorCurrents.assign(m_NumJoints, 0.0);
+	b_is15066Strategy = false;
+
+	m_previousJointVelocity.assign(m_NumJoints, 0.0);
 
 	m_SensedJointTorques.assign(m_NumJoints, 0.0);
 	m_EstimatedJointTorques.assign(m_NumJoints, 0.0);
 	m_DisturbanceJointTorques.assign(m_NumJoints, 0.0);
 	m_meanDisturbanceJointTorques.assign(m_NumJoints, 0.0);
-	m_FilteredSensedEeForces.assign(6, 0.0);
-	m_FilteredAdmittanceDeviatePose.assign(6, 0.0);
-	m_filteredAdmittanceVelocity.assign(6, 0.0);
-
+	m_FilteredSensedEeForces.assign(m_NumJoints, 0.0);
+	m_FilteredAdmittanceDeviatePose.assign(m_NumJoints, 0.0);
+	m_filteredAdmittanceVelocity.assign(m_NumJoints, 0.0);
+	m_EstimatedGravityTorques.assign(m_NumJoints, 0.0);
 	m_StateEstimator.initialize(jointPositions);
 	m_commandStateEstimator.initialize(jointPositions);
 	EcRealVector filterTimeConstant;
-	filterTimeConstant.assign(m_NumJoints, 0.012);			// 设置滤波的时间常数；
+	filterTimeConstant.assign(m_NumJoints, 0.012);			
 	setFilterTimeConstant(jointPositions, filterTimeConstant, filterTimeConstant);
 
 	m_ViscousFrictionCoefficient.assign(m_NumJoints, 0.0);
 	m_CoulombFriction.assign(m_NumJoints, 0.0);
-	m_vibrationPeriod.assign(7, 0.0);
+	m_vibrationPeriod.assign(m_NumJoints, 0.0);
 	m_JacobianDeterminant = 1.0;
 
 	m_jointLimitAgainstForceEquivalent.assign(m_NumJoints, 100.0);
 
 	m_timeStep = m_StateEstimator.samplingPeriod();
 
-	m_selectedPositionCoeff = { 1, 1, 0, 0, 0, 0 };
-	m_viscousVelocityCoeff = { 1, 1, 1, 1, 1, 1 };
+	m_selectedPositionCoeff.assign(m_NumJoints, 0.0);
+	if (m_NumJoints >= 2) {
+		m_selectedPositionCoeff[0] = 1.0;
+		m_selectedPositionCoeff[1] = 1.0;
+	}
+	m_viscousVelocityCoeff.assign(m_NumJoints, 1.0);
 	m_endEffectorInertia = 0.5;
 	m_endEffectorMass = 5;
-	m_eeCalcVelocity.assign(6, 0.0);
-	m_eeCalcPosition.assign(6, 0.0);
-	m_eeCurrentPosition.assign(6, 0.0);
+	m_eeCalcVelocity.assign(m_NumJoints, 0.0);
+	m_eeCalcPosition.assign(m_NumJoints, 0.0);
+	m_eeCurrentPosition.assign(m_NumJoints, 0.0);
 
-	m_payloadMass = 0.0;				//负载配置；
-	m_centerofMass = { 0.0, 0.0, 0.0 };
+	m_payloadMass = 0.0;				
+	m_centerofMass.assign(3, 0.0);
 
-	m_d1 = 0.220;		//默认设置为ElfinV5的杆长参数；
+	m_d1 = 0.220;		
 	m_d4 = 0.420;
 	m_d6 = 0.180;
 	m_a2 = 0.380;
@@ -149,22 +188,21 @@ EcBoolean CHansCollaborativeAlgorithm::initializeStates
 	m_maxEfficiency.assign(m_NumJoints, 1.0);
 	m_dampEfficiency.assign(m_NumJoints, 0.0);
 	m_dampSetting.assign(m_NumJoints, 1.0);
-
+	m_gearRatio.assign(m_NumJoints, 1.0);
 
 	EcRealVector para;
-	para.assign(78, 0.0);
+	para.assign(m_NumJoints * 13, 0.0);
 
-	EcReal m = 0;
-	EcRealVector cop = { 0, 0, 0 };
 	m_DynamicsLinearParameters = para;
 	m_DynamicsParameters = para;
+	m_compenasteDynParams = para;
 	m_baseMountingRotation = 0.0;
 	m_baseMountingTilt = 0.0;
 
 	m_friTemperaturesParams.assign(m_NumJoints, 1.0);
 	m_jointTemperatures.assign(m_NumJoints, 45.0);
 	m_jointVoltages.assign(m_NumJoints, 48.0);
-
+	m_forceCollisionThreshold = { 80,80,30 };
 
 	EcReal rotation = 0;
 	EcReal tilt = 0;
@@ -177,16 +215,43 @@ EcBoolean CHansCollaborativeAlgorithm::initializeStates
 	m_slowDownBoundary.assign(m_NumJoints, 0.2);
 	m_stopBoundary.assign(m_NumJoints, 0.005);
 
-	m_maxJointVelocitiesInAssistiveMode = { 1.05, 1.05, 1.05, 1.75, 1.75, 2.35 };    //设置关节默认最大速度
+	m_meanDriveBackTorque.clear();
+	for (int i = 0; i < m_NumJoints; i++) {
+		MovingAverage ma;
+		ma.setDataPoolLength(5);
+		m_meanDriveBackTorque.push_back(ma);
+	}
+	b_initEnterDriveBackFlag.assign(m_NumJoints, false);
+
+	m_maxJointVelocitiesInAssistiveMode.assign(m_NumJoints, 1.75);
+	if (m_NumJoints >= 3) {
+		m_maxJointVelocitiesInAssistiveMode[0] = 1.05;
+		m_maxJointVelocitiesInAssistiveMode[1] = 1.05;
+		m_maxJointVelocitiesInAssistiveMode[2] = 1.05;
+	}
+	
+	m_maxJointVelocitiesInAssistiveModeForErr.assign(m_NumJoints, 2.35);
+	if (m_NumJoints >= 3) {
+		m_maxJointVelocitiesInAssistiveModeForErr[0] = 1.05;
+		m_maxJointVelocitiesInAssistiveModeForErr[1] = 1.05;
+		m_maxJointVelocitiesInAssistiveModeForErr[2] = 1.05;
+	}
+
 	m_frictionModel.setMaxJointVelocitiesInAssistiveMode(m_maxJointVelocitiesInAssistiveMode);
 	m_nonZeroVelocity = 0.001;
 	m_assistiveCheckTime = 0.08;
 
-	m_zeroVelocityThresholds = { 0.06,0.06,0.06,0.06,0.06,0.06 };
-	m_lowVelocityThresholds = { 0.25, 0.25, 0.25, 0.25, 0.25, 0.25 };
+	m_zeroVelocityThresholds.assign(m_NumJoints, 0.06);
+	m_lowVelocityThresholds.assign(m_NumJoints, 0.25);
 	m_CollisionStopDynamicsThresholds.assign(m_NumJoints, 0.0);
 	setVibrationPeriod();
-	m_VibrationAmplitude = { 0.9, 0.9, 0.9, 1.0, 1.0, 1.2 };
+	m_VibrationAmplitude.assign(m_NumJoints, 1.0);
+	if (m_NumJoints >= 6) {
+		m_VibrationAmplitude[0] = 0.9;
+		m_VibrationAmplitude[1] = 0.9;
+		m_VibrationAmplitude[2] = 0.9;
+		m_VibrationAmplitude[5] = 1.2;
+	}
 
 	m_maxJointVeloctiy.assign(m_NumJoints, 1.5);
 	m_maxJointAccelerations.assign(m_NumJoints, 6.0);
@@ -200,26 +265,36 @@ EcBoolean CHansCollaborativeAlgorithm::initializeStates
 	m_AssistiveStartJointPosition.assign(m_NumJoints, 0.0);
 	m_AssistiveStartSensedTorques.assign(m_NumJoints, 0.0);
 
-	m_AssistiveSafeAccumulateCount = { 50, 50, 50, 50, 50, 150 };
-	m_AssistiveSafeStartAccel = { 0.8, 0.8, 0.8, 0.8, 0.8, 1.5 };
+	m_AssistiveSafeAccumulateCount.assign(m_NumJoints, 50);
+	if (m_NumJoints >= 6) m_AssistiveSafeAccumulateCount[5] = 150;
+
+	m_AssistiveSafeStartAccel.assign(m_NumJoints, 0.8);
+	if (m_NumJoints >= 6) m_AssistiveSafeStartAccel[5] = 1.5;
+
 	m_AssistiveStartSumAccel.assign(m_NumJoints, 0.0);
 	m_zeroVector.assign(m_NumJoints, 0.0);
-	b_falseVector.assign(m_NumJoints, 0.0);
+	b_falseVector.assign(m_NumJoints, false);
 
 	m_AssistiveState = assistive_normal;
 	m_motionConstraintScale = 1.0;
 	b_previousAssisteErrorState = false;
 
+	m_maxAllowControlBoxCurrent = 200;			
 
-
-	m_driveBackStatusVector.resize(6);
+	m_driveBackStatusVector.assign(m_NumJoints, status_statePosition);
 	m_driveBackStartPosition = jointPositions;
+	m_collisionDetectivePosition = jointPositions;
 	m_overZeroVelCount.assign(m_NumJoints, 0);
 	m_actualPreviousJointVel.assign(m_NumJoints, 0.0);
 	m_actualJointPosition.assign(m_NumJoints, 0.0);
 	m_sensedRawTorque.assign(m_NumJoints, 0.0);
 	m_startCollisionJointVel.assign(m_NumJoints, 0.0);
+	m_driveBackDirctionForJ5.assign(m_NumJoints, 1.0);
 
+	m_accumuActualJointCurrent.assign(m_NumJoints, 0);
+	m_accumuActualXYZPosition.assign(3, 0);
+	m_startActualXYXVel.assign(3, 0);
+	m_accumuTime = 0;
 
 	m_driveBackDisturbancesThreshold.assign(m_NumJoints, 100.0);
 	m_driveBackCollisionStopStatus.assign(m_NumJoints, EcFalse);
@@ -229,7 +304,6 @@ EcBoolean CHansCollaborativeAlgorithm::initializeStates
 	m_AssistiveModeCollisionStopThresholds.assign(m_NumJoints, 200.0);
 	m_startDriveBackJointPosition.assign(m_NumJoints, 0.0);
 
-	// 弹性摩擦相关参数；
 	m_alpha.assign(m_NumJoints, 20.0);
 	m_omegaK.assign(m_NumJoints, 0.0);
 	m_frictionRatio2.assign(m_NumJoints, 0.7);
@@ -238,8 +312,18 @@ EcBoolean CHansCollaborativeAlgorithm::initializeStates
 	m_alphaH = 500;
 	m_Rw = 0.01;
 	m_velThreshold = 0.005;
-	m_KVector = { 3000, 3000, 2000, 2000, 2500, 500 };
-	// 弹性摩擦相关参数
+	m_KVector.assign(m_NumJoints, 2000.0);
+	if (m_NumJoints >= 3) {
+		m_KVector[0] = 3000.0;
+		m_KVector[1] = 3000.0;
+		m_KVector[2] = 2000.0;
+	}
+	if (m_NumJoints >= 6) {
+		m_KVector[3] = 2000.0;
+		m_KVector[4] = 2500.0;
+		m_KVector[5] = 500.0;
+	}
+
 	m_jointMPosition = jointPositions;
 	m_jointSidePosition = jointPositions;
 	m_CollisionStopThresholds.assign(m_NumJoints, 100);
@@ -251,12 +335,11 @@ EcBoolean CHansCollaborativeAlgorithm::initializeStates
 	m_maxMomentum = 25;
 	m_maxConstraintPower = 300;
 	m_maxConstraintMomentum = 25;
-	m_maxJointPowers.assign(6, 1000);
+	m_maxJointPowers.assign(m_NumJoints, 1000);
 	m_velFactorConstraint = 1.0;
 	m_preVelFactorConstraint = 1.0;
 	m_accFactorConstraint = 1.0;
 
-	// mean in NUMofMeanVelFactorConst cycle;
 	m_meanFilteredVelConstraint.assign(NUMofMeanVelFactorConst, 1.0);
 	m_constraintsFrictionCompensatoryFactor = 1.0;
 
@@ -267,11 +350,42 @@ EcBoolean CHansCollaborativeAlgorithm::initializeStates
 
 
 	m_loopJointPosition.assign(21, jointPositions);
-	m_loopSensedCurrent.assign(21, jointPositions);
-	//setDynamicsLinearParameters(para);
-	//setPayloadMassProperties(m, cop);
+	m_loopCommandJointPosition.assign(21, jointPositions);
+	m_loopSensedCurrent.assign(21, EcRealVector(m_NumJoints, 0.0));
 
+	m_movMeanLenForDistrubanceTorque = int(0.1 / m_updateTimePeriod);
+
+	m_diffTorqueMovMean.clear();
+	for (int i = 0; i < m_NumJoints; i++) {
+		MovingAverage ma;
+		ma.setDataPoolLength(m_movMeanLenForDistrubanceTorque);
+		m_diffTorqueMovMean.push_back(ma);
+	}
+
+	m_forceMovMean.clear();
+	for (int i = 0; i < 3; i++) {
+		MovingAverage ma;
+		ma.setDataPoolLength(100);
+		m_forceMovMean.push_back(ma);
+	}
+
+	m_eeAccMovMean.clear();
+	for (int i = 0; i < 3; i++) {
+		MovingAverage ma;
+		ma.setDataPoolLength(5);
+		m_eeAccMovMean.push_back(ma);
+	}
+
+	m_diffTorqueTriggerCollisionRatio.assign(m_NumJoints, 1.4);
+	if (m_NumJoints >= 6) {
+		m_diffTorqueTriggerCollisionRatio[m_NumJoints-2] = 1.7;
+		m_diffTorqueTriggerCollisionRatio[m_NumJoints-1] = 1.7;
+	}
+	
 	b_isReadyToCloseMode = false;
+
+	m_previousEnchanceDisturbJointTorques.assign(m_NumJoints, 0);
+	
 	return EcTrue;
 }
 
@@ -323,23 +437,37 @@ EcBoolean CHansCollaborativeAlgorithm::updateStateEstimates
 		return EcFalse;
 	}
 
+	for (int i = 0; i < m_NumJoints; i++)
+		if (fabs(commandJointPositions[i] - m_loopCommandJointPosition[20][i]) > 0.03)  
+			m_lockJointEstimateStatus = 0;
 
 	m_loopJointPosition[20] = jointPositions;
+	m_loopCommandJointPosition[20] = commandJointPositions;
 	m_loopSensedCurrent[20] = motorCurrents;
-	//循环保存更新的位置；
+
+
+	EcRealVector delayCommandJointPositon = commandJointPositions;
+	if (!b_is15066Strategy)
+	{
+		int delayCount = int(0.03 / m_updateTimePeriod);
+		delayCount = 20 - delayCount;
+		delayCount = (delayCount > 0) ? delayCount : 0;
+		delayCommandJointPositon = m_loopCommandJointPosition[delayCount];
+
+	}
+
 	for (int i = 0; i < 20; i++)
 	{
 		m_loopJointPosition[i] = m_loopJointPosition[i + 1];
+		m_loopCommandJointPosition[i] = m_loopCommandJointPosition[i + 1];
 		m_loopSensedCurrent[i] = m_loopSensedCurrent[i + 1];
 	}
 
 
-	// log: 当速度非零时，若出现实际位置和前一周期的数值相同，则打印语句；			后续应该增加约束，只允许有两个周期是这样；
 	bool warningStatus = false;
-	/**/
 	for (int i = 0; i < m_NumJoints; i++)
 	{
-		if (fabs(m_FilteredJointVelocities[i]) > 0.087							// 5°/s;
+		if (fabs(m_FilteredJointVelocities[i]) > 0.087							
 			&& fabs(m_actualJointPositions[i] - jointPositions[i]) < 0.0000001)
 		{
 			warningStatus = true;
@@ -355,13 +483,12 @@ EcBoolean CHansCollaborativeAlgorithm::updateStateEstimates
 		m_dropDataCount = 0;
 	}
 
-	// 如果存在实际位置没有更新的情况，使用差分的方法；    有可能存在连续多个周期丢失；
 	EcRealVector tempJointPositions(m_NumJoints);
 	if (warningStatus)
 	{
 		EcReal t2 = m_updateTimePeriod * m_updateTimePeriod;
 		for (int i = 0; i < m_NumJoints; i++)
-			tempJointPositions[i] = m_actualJointPositions[i] + m_FilteredJointVelocities[i] * m_updateTimePeriod * m_dropDataCount + m_FilteredJointAccelerations[i] * t2 * m_dropDataCount;
+			tempJointPositions[i] = m_actualJointPositions[i] + m_FilteredActualJointVelocities[i] * m_updateTimePeriod * m_dropDataCount + m_FilteredActualJointAcc[i] * t2 * m_dropDataCount;
 	}
 	else
 	{
@@ -369,6 +496,7 @@ EcBoolean CHansCollaborativeAlgorithm::updateStateEstimates
 		m_dropDataCount = 0;
 	}
 
+<<<<<<< HEAD
 	m_actualJointPosition = jointPositions;
 	// 计算关节的关节差分速度
 	for (int i = 0; i < m_NumJoints; i++)
@@ -376,6 +504,13 @@ EcBoolean CHansCollaborativeAlgorithm::updateStateEstimates
 
 	//std::cout << "update:"<<m_actualJointVel[0]<<"," << tempJointPositions[0] << "," << m_actualJointPositions[0] << "," << m_updateTimePeriod << std::endl;
 	m_actualJointPositions = jointPositions;
+=======
+	m_actualJointPosition = tempJointPositions;
+	for (int i = 0; i < m_NumJoints; i++)
+		m_actualJointVel[i] = (tempJointPositions[i] - m_actualJointPositions[i]) / m_updateTimePeriod;
+
+	m_actualJointPositions = tempJointPositions;
+>>>>>>> 40f7afc7711530af2c9319aaedf0d2aa15dee117
 
 	EcBoolean retVal = m_StateEstimator.estimateStates(
 		tempJointPositions,
@@ -384,18 +519,72 @@ EcBoolean CHansCollaborativeAlgorithm::updateStateEstimates
 		m_FilteredJointAccelerations
 	);
 
-	// 以命令位置作为状态估计；
 	retVal = m_commandStateEstimator.estimateStates(
-		commandJointPositions,
+		delayCommandJointPositon,
 		m_FilteredCommandJointPositions,
 		m_FilteredCommandJointVelocities,
 		m_FilteredCommandJointAccelerations
 	);
 
+	m_FilteredActualJointVelocities = m_FilteredJointVelocities;
+	m_FilteredActualJointAcc = m_FilteredJointAccelerations;
+
+	if (m_lockJointEstimateStatus > 30)
+	{
+		m_FilteredJointVelocities = m_FilteredCommandJointVelocities;
+		m_FilteredJointAccelerations = m_FilteredCommandJointAccelerations;
+	}
+	
+	if(m_lockJointEstimateStatus<40)
+		m_lockJointEstimateStatus++;
+
 	retVal &= m_StateEstimator.filterMotorCurrents(motorCurrents, m_FilteredMotorCurrents);
 	getSensedTorques(motorCurrents, m_sensedRawTorque);
-
 	return retVal;
+}
+
+void CHansCollaborativeAlgorithm::updateForceSensorData(
+	const EcBoolean enable,
+	const EcVector force
+)
+{
+	if (enable)
+	{
+		EcVector tempForce = force;
+		for (int i = 0; i < 3; i++)
+		{
+			m_forceMovMean[i].updateFilteredData(force[i], tempForce[i]);
+			m_sensedForce[i] = force[i] - tempForce[i];
+		}
+	}
+	b_enableForceCollision = enable;
+	m_rawForce = force;
+}
+
+void CHansCollaborativeAlgorithm::updateForceSensorForFeedForward(
+	const EcBoolean enable,
+	const EcRealVector& force
+)
+{
+	if (enable)
+	{
+		EcFrame ee = m_kinBase->forwardKinematics(m_loopCommandJointPosition[20]);
+		EcVector F = { force[0],force[1],force[2] };
+		EcVector T = { force[3],force[4],force[5] };
+
+		F = ee.M * F;
+		T = ee.M * T;
+		EcRealVector baseForce = { F[0], F[1], F[2], T[0], T[1], T[2] };
+
+		m_kinBase->calcJacobianJointTorque(m_loopCommandJointPosition[20], baseForce, m_jointTorqueFromEEForce);
+		for (int i = 0; i < m_jointTorqueFromEEForce.size(); i++)
+			m_jointTorqueFromEEForce[i] *= 0.0;
+	}
+	else
+	{
+		m_jointTorqueFromEEForce.assign(m_NumJoints, 0);
+	}
+	b_enableEEWrenchFeedForward = enable;
 }
 
 
@@ -409,18 +598,6 @@ EcBoolean CHansCollaborativeAlgorithm::checkForCollision
 	{
 		return EcFalse;
 	}
-
-	/*
-	// 修改为命令参数；可以减少滤波参数，减少加速度的相位滞后；
-	EcBoolean retVal = calculateDisturbanceTorques(m_FilteredMotorCurrents,
-		m_FilteredCommandJointPositions,
-		m_FilteredCommandJointVelocities,
-		m_FilteredCommandJointAccelerations,
-		m_SensedJointTorques,
-		m_EstimatedJointTorques,
-		m_DisturbanceJointTorques);
-	*/
-	// 修改为命令参数；可以减少滤波参数，减少加速度的相位滞后；
 	EcBoolean retVal = calculateDisturbanceTorques(m_FilteredMotorCurrents,
 		m_FilteredJointPositions,
 		m_FilteredJointVelocities,
@@ -429,26 +606,39 @@ EcBoolean CHansCollaborativeAlgorithm::checkForCollision
 		m_EstimatedJointTorques,
 		m_DisturbanceJointTorques);
 
-	//动量观测器  || 使用命令速度和加速度有一些超前，使用实际速度和加速度试试
+	EcRealVector meanDisturbanceTorque(m_NumJoints);
+	for (int i = 0; i < m_NumJoints; i++)
+	{
+		m_diffTorqueMovMean[i].updateFilteredData(m_DisturbanceJointTorques[i], meanDisturbanceTorque[i]);
+		m_meanDisturbanceJointTorques[i] = m_DisturbanceJointTorques[i] - meanDisturbanceTorque[i];
+	}
+
 	m_momentumObserver->updateStateEstimates(m_actualJointPositions,
 		m_FilteredJointVelocities,
 		m_FilteredJointAccelerations,
 		m_SensedJointTorques);
 
-	retVal &= m_StateEstimator.filterDisturbanceTorques(m_DisturbanceJointTorques, m_DisturbanceJointTorques);
-	updateDynamicsCollisionStopThreshold(m_CollisionStopDynamicsThresholds);
+	m_momentumObserverActual->updateStateEstimates(m_actualJointPositions,
+		m_FilteredActualJointVelocities,
+		m_FilteredActualJointAcc,
+		m_SensedJointTorques);
+
+	updateDynamicsCollisionStopThreshold(m_DisturbanceJointTorques,m_CollisionStopDynamicsThresholds);
 
 	retVal &= updateCollisionStopStatus(m_CollisionStopDynamicsThresholds, m_DisturbanceJointTorques, jointCollisionStatus);
 
 	bool normalStatus = true;
-	// 力矩偏差判断和动量观测器
 	if (b_isUsingMomentumObserver)
 	{
-		EcBooleanVector momentumCollisionStatus(6);
+		EcBooleanVector momentumCollisionStatus(m_NumJoints), momentumCollisionActualStatus(m_NumJoints);
 		m_momentumObserver->getObserverTorqueDisturbances(m_observerTorques);
+
 		m_momentumObserver->getJointCollisionState(momentumCollisionStatus);
+		m_momentumObserverActual->getJointCollisionState(momentumCollisionActualStatus);
+
 		for (EcSizeT i = 0; i < m_NumJoints; i++)
 		{
+			momentumCollisionStatus[i] = momentumCollisionStatus[i] && momentumCollisionActualStatus[i];
 			if (momentumCollisionStatus[i])
 				type = collision_Observer;
 			if (jointCollisionStatus[i])
@@ -457,36 +647,101 @@ EcBoolean CHansCollaborativeAlgorithm::checkForCollision
 			jointCollisionStatus[i] = jointCollisionStatus[i] || momentumCollisionStatus[i];
 		}
 	}
+	else
+		m_observerTorques.assign(m_NumJoints, 0.0);
 
-	/**/
+	if (b_enableForceCollision && m_eeLinearVel > 0.180)
+	{
+		
+		if (fabs(m_sensedForce[2]) > m_forceCollisionThreshold[2])
+		{
+			type = collision_forceSensor;
+			jointCollisionStatus[2] = true;
+			std::cout << "force collision_:" <<m_currentTime<<",  " << m_sensedForce[2] << "," << m_previousEndEffectorVel[2] << "," << m_meanEEAcc[2] << "," << m_loopSensedCurrent[20][2] << std::endl;
+		}
+		EcReal planeForce = std::sqrt(m_sensedForce[0] * m_sensedForce[0] + m_sensedForce[1] * m_sensedForce[1]);
+		if (planeForce > m_forceCollisionThreshold[1])
+		{
+			type = collision_forceSensor;
+			jointCollisionStatus[1] = true;
+			std::cout << "force collision_:" << m_currentTime << ",  " << m_sensedForce[0] << "," << m_sensedForce[1] << "," << m_loopSensedCurrent[20][1] << std::endl;
+		}
+	}
+
 	for (EcSizeT i = 0; i < m_NumJoints; i++)
 	{
-		if (jointCollisionStatus[i] && m_currentTime > 20)
+		if (jointCollisionStatus[i] && m_currentTime > 5 && fabs(m_SensedJointTorques[i]) >= fabs(m_EstimatedJointTorques[i]) * 0.2 && fabs(m_FilteredJointVelocities[i]) >= 0.005)
 		{
 			normalStatus = false;
+			std::cout << "ft:" << b_enableForceCollision << "," << m_eeLinearVel << "," << m_sensedForce[2]<<","<<m_rawForce[2] << std::endl;
+			std::cout << "collisionJoint:";
+			for (int k = 0; k < m_NumJoints; k++) std::cout << jointCollisionStatus[k] << (k == m_NumJoints - 1 ? "" : ",");
+			std::cout << std::endl;
 
 			std::cout << "Collision Joint:" << i + 1 << ",pvased,th,type:" << m_FilteredJointPositions[i] << "," << m_FilteredJointVelocities[i] << "," <<
 				m_FilteredJointAccelerations[i] << "," << m_SensedJointTorques[i] << "," << m_EstimatedJointTorques[i] << "," << m_DisturbanceJointTorques[i] <<
-				"," << m_CollisionStopDynamicsThresholds[i] << "," << m_CollisionStopThresholds[i] << "," << type << std::endl;
+				"," << m_CollisionStopDynamicsThresholds[i] << "," << m_observerTorques[i] << "," << type << std::endl;
+			
+			std::cout << "actual jointVel:";
+			for (int k = 0; k < m_NumJoints; k++) std::cout << m_FilteredActualJointVelocities[k] << (k == m_NumJoints - 1 ? "" : ",");
+			std::cout << std::endl;
 
-			std::cout << "update jointPosition:";
-			for (int k = 0; k < 20; k++)
-			{
-				std::cout << m_loopJointPosition[k][i] << ",";
-			}
+			std::cout << "actual jointAcc:";
+			for (int k = 0; k < m_NumJoints; k++) std::cout << m_FilteredActualJointAcc[k] << (k == m_NumJoints - 1 ? "" : ",");
 			std::cout << std::endl;
-			std::cout << "update current:";
-			for (int k = 0; k < 20; k++)
-			{
-				std::cout << m_loopSensedCurrent[k][i] << ",";
-			}
+
+			std::cout << "updateJointPosition=[";
+			for (int k = 0; k < 20; k++) std::cout << m_loopJointPosition[k][i] << ",";
+			std::cout<<"];" << std::endl;
+
+			std::cout << "updateCommandJointPosition=[";
+			for (int k = 0; k < 20; k++) std::cout << m_loopCommandJointPosition[k][i] << ",";
+			std::cout<<"];" << std::endl;
+			std::cout << "updateCurrent=[";
+			for (int k = 0; k < 20; k++) std::cout << m_loopSensedCurrent[k][i] << ",";
+			std::cout <<"];"<< "\n jointStatus:" << std::endl;
+			
+			std::cout << "dynth: ";
+			for (int k = 0; k < m_NumJoints; k++) std::cout << m_CollisionStopDynamicsThresholds[k] << (k == m_NumJoints - 1 ? "" : ",");
 			std::cout << std::endl;
+
+			std::cout <<"est: ";
+			for (int k = 0; k < m_NumJoints; k++) std::cout << m_EstimatedJointTorques[k] << (k == m_NumJoints - 1 ? "" : ",");
+			std::cout << std::endl;
+
+			std::cout <<"meanD: ";
+			for (int k = 0; k < m_NumJoints; k++) std::cout << m_meanDisturbanceJointTorques[k] << (k == m_NumJoints - 1 ? "" : ",");
+			std::cout << std::endl;
+
+			std::cout << "diff: ";
+			for (int k = 0; k < m_NumJoints; k++) std::cout << m_DisturbanceJointTorques[k] << (k == m_NumJoints - 1 ? "" : ",");
+			std::cout << std::endl;
+
+			std::cout <<"mObs: ";
+			for (int k = 0; k < m_NumJoints; k++) std::cout << m_observerTorques[k] << (k == m_NumJoints - 1 ? "" : ",");
+			std::cout << std::endl;
+
+			std::cout << std::endl;
+			std::cout << "\n update current:\n";
+			for (int j = 0; j < m_NumJoints; j++)
+			{
+				std::cout << "joint" << j + 1 << "=[";
+				for (int kk = 0; kk < 19; kk++) std::cout << m_loopSensedCurrent[kk][j] << ",";
+				std::cout << m_loopSensedCurrent[19][j] <<"];" << std::endl;
+			}
 			break;
 		}
 	}
 
+	if (m_currentTime < 0.2)
+		jointCollisionStatus = m_savedCollisionStopStatus;
+
 	if (!normalStatus)
-		m_currentTime = 0;			// 发生碰撞后，将时间清零；
+	{
+		m_currentTime = 0;			
+		m_savedCollisionStopStatus = jointCollisionStatus;
+	}
+
 
 	m_collisionStopStatus = jointCollisionStatus;
 	return retVal;
@@ -495,22 +750,87 @@ EcBoolean CHansCollaborativeAlgorithm::checkForCollision
 
 void CHansCollaborativeAlgorithm::updateDynamicsCollisionStopThreshold
 (
+	const EcRealVector& currentDisturbTorque,
 	EcRealVector& enchanceDisturbJointTorques
 )
 {
-	// 1. 减小摩擦力换向带来的影响
-	// 2. 考虑负载质量+运行速度带来的阈值变化
 	for (EcSizeT i = 0; i < m_NumJoints; i++)
 	{
-		if (fabs(m_FilteredJointVelocities[i]) < 0.03)
+		if (fabs(m_FilteredJointVelocities[i]) <  0.01 && fabs(m_FilteredJointAccelerations[i]) > 1)		
 		{
-			enchanceDisturbJointTorques[i] = m_CollisionStopThresholds[i] + m_CoulombFriction[i];
+			enchanceDisturbJointTorques[i] = m_CollisionStopThresholds[i] + 3.0 * m_CoulombFriction[i];
+		}
+		if (fabs(m_FilteredJointVelocities[i]) < 0.07)		
+		{
+			enchanceDisturbJointTorques[i] = m_CollisionStopThresholds[i] + 3.0 * m_CoulombFriction[i];
+		}
+		else if (fabs(m_FilteredJointVelocities[i]) < 0.09)
+		{
+			enchanceDisturbJointTorques[i] = m_CollisionStopThresholds[i] + 1.0 * m_CoulombFriction[i];
+		}
+		else if(fabs(m_FilteredJointAccelerations[i])>2.5){
+			enchanceDisturbJointTorques[i] = m_CollisionStopThresholds[i]+ (fabs(m_FilteredJointAccelerations[i])/2.5 -0.3)* m_CoulombFriction[i];
 		}
 		else {
 			enchanceDisturbJointTorques[i] = m_CollisionStopThresholds[i];
 		}
-		enchanceDisturbJointTorques[i] += m_massThresholdTorques[i];
+
+		EcReal enhanceThreshold = fabs(m_EstimatedJointTorques[i]) *0.1 ;
+		enchanceDisturbJointTorques[i] += enhanceThreshold;
 	}
+
+	for (int i = m_NumJoints - 2; i < m_NumJoints; i++) {
+		EcReal ratio = 0.0;
+		EcReal enchance = fabs(m_EstimatedJointTorques[i]) * (0.3 + ratio);
+		if (fabs(m_FilteredJointVelocities[i]) > 1 || fabs(m_FilteredJointAccelerations[i])>6)		
+		{
+			ratio = fabs(m_FilteredJointVelocities[i]) / 10.0;
+			if (fabs(m_FilteredJointVelocities[i]) > 2)		
+				ratio *= 2;
+
+			enchance = fabs(m_EstimatedJointTorques[i]) * (0.3 + ratio);
+			enchance = (enchance > 2) ? enchance : 2;
+		}
+		enchanceDisturbJointTorques[i] = enchanceDisturbJointTorques[i] * 0.5 +enchance;
+	}
+
+	EcFrame T = m_kinBase->forwardKinematics(m_FilteredJointPositions);
+	EcVector v1 = T.M.UnitZ();			
+
+	EcRealVector endEffectorVel(6), endVelJ5(6);
+	m_kinBase->calcJacobianEndEffectorVelocity(m_actualJointPosition, m_FilteredJointVelocities, endEffectorVel);
+	EcVector v2 = { endEffectorVel[0],endEffectorVel[1],endEffectorVel[2] };			
+	EcVector eeAcc = (v2 - m_previousEndEffectorVel) / m_updateTimePeriod;		
+	for (int i = 0; i < 3; i++)
+	{
+		m_eeAccMovMean[i].updateFilteredData(eeAcc[i], m_meanEEAcc[i]);			
+	}
+
+	m_previousEndEffectorVel = v2;
+	m_eeLinearVel = v2.Normalize();
+
+
+	EcReal t = (v1.Norm() * v2.Norm());   
+	if (t > 0)
+	{
+		EcReal temp = (v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]) / t;			
+		temp = (fabs(temp) > 1.0) ? KDL::sign(temp) : temp;			
+		enchanceDisturbJointTorques[m_NumJoints - 2] += (1-fabs(temp)) * 3 - 0.1* enchanceDisturbJointTorques[m_NumJoints - 2];
+	}
+	if(m_CollisionStopThresholds[m_NumJoints - 2]<10)
+	{ 
+		if (m_eeLinearVel > 0.280)				
+		{
+			EcReal ratio = m_eeLinearVel / 0.280;
+			ratio = (ratio < 2) ? ratio : 2;
+			for (int i = 0; i < 3; i++)
+			{
+				enchanceDisturbJointTorques[i] *= ratio;
+			}
+		}
+	}
+
+	m_previousEnchanceDisturbJointTorques = enchanceDisturbJointTorques;
 }
 
 
@@ -534,16 +854,10 @@ void CHansCollaborativeAlgorithm::setRobotMountingAngles
 {
 	std::cout << "mounting:" << rotation << "," << tilt << std::endl;
 	m_baseMountingRotation = rotation;
-	m_baseMountingTilt = tilt;							//Todo:用于计算等价重力时，是否应当是针对重力的旋转，而非基座的旋转；
+	m_baseMountingTilt = tilt;							
 
 	KDL::Rotation gRotation, R1, R2;
-	/*
-	R1 = KDL::Rotation::RPY(0, 0, m_baseMountingRotation);
-	R2 = KDL::Rotation::RPY(0, m_baseMountingTilt, 0);
-	gRotation = R1 * R2	; //  右乘，绕旋转后的轴旋转
-	*/
 
-	// need to be inversed.
 	R1 = KDL::Rotation::RPY(0, 0, m_baseMountingRotation);
 	R2 = KDL::Rotation::RPY(0, m_baseMountingTilt, 0);
 	gRotation = (R2 * R1).Inverse();
@@ -552,10 +866,10 @@ void CHansCollaborativeAlgorithm::setRobotMountingAngles
 	m_gx = gVector[0];
 	m_gy = gVector[1];
 	m_gz = gVector[2];
-	//std::cout << "MountingRad:" << m_baseMountingRotation << "," << m_baseMountingTilt << std::endl;
 
 	m_dynBase->setGravityVector(m_gx, m_gy, m_gz);
 	m_momentumObserver->setGravityAcceleration(m_gx, m_gy, m_gz);
+	m_momentumObserverActual->setGravityAcceleration(m_gx, m_gy, m_gz);
 }
 
 EcBoolean CHansCollaborativeAlgorithm::setActutorMaxCurrentLimits
@@ -567,18 +881,21 @@ EcBoolean CHansCollaborativeAlgorithm::setActutorMaxCurrentLimits
 	{
 		return false;
 	}
-	std::cout << "(cobot)Max Actuator Current:" << maxCurrents[0] << "," << maxCurrents[1] << "," << maxCurrents[2] << "," << maxCurrents[3] << "," << maxCurrents[4] << "," << maxCurrents[5] << "," << std::endl;
+	std::cout << "(cobot)Max Actuator Current:";
+	for(int i=0; i<m_NumJoints; i++) std::cout << maxCurrents[i] << (i==m_NumJoints-1?"":",");
+	std::cout << std::endl;
+
 	for (EcSizeT i = 0; i < m_NumJoints; i++)
 	{
-		if (maxCurrents[i] < 0.1 || maxCurrents[i]>100) {
-			std::cout << "************** The setting of actutor max current parameters occurs ERROR! over limit." << std::endl;
+		if (maxCurrents[i] < 0.1 || maxCurrents[i]>1000) {
+			std::cout << "************** ERROR! over limit." <<maxCurrents[i]<< std::endl;
 			return false;
 		}
 	}
 	m_MaxActutorCurrents = maxCurrents;
 	for (EcSizeT i = 0; i < m_NumJoints; i++)
 	{
-		m_MaxActutorTorques[i] = m_AdjustedTorqueConstants[i] * m_MaxActutorCurrents[i] * 1.5;		// 放大1.5倍；
+		m_MaxActutorTorques[i] = m_AdjustedTorqueConstants[i] * m_MaxActutorCurrents[i] * 1.0;		
 	}
 	return true;
 }
@@ -592,6 +909,7 @@ void CHansCollaborativeAlgorithm::setGravityVector
 	m_gy = gravity[1];
 	m_gz = gravity[2];
 	m_momentumObserver->setGravityAcceleration(m_gx, m_gy, m_gz);
+	m_momentumObserverActual->setGravityAcceleration(m_gx, m_gy, m_gz);
 	std::cout << "Gravity Vector:" << m_gx << "," << m_gy << "," << m_gz << std::endl;
 }
 
@@ -602,12 +920,7 @@ void CHansCollaborativeAlgorithm::setDynamicsLinearParameters
 {
 	m_DynamicsParameters.assign(params.begin(), params.end());
 	m_DynamicsLinearParameters = m_DynamicsParameters;
-
-	//std::cout << "dynamicsParams:" <<params.size() << std::endl;
-	//for (int i = 0; i < params.size(); i++)
-	//{
-	//	std::cout << params[i] << std::endl;
-	//}
+	m_compenasteDynParams = m_DynamicsLinearParameters;
 
 	setPayloadMassProperties(m_payloadMass, m_centerofMass);
 	setFrictionModel(params);
@@ -623,7 +936,16 @@ EcBoolean CHansCollaborativeAlgorithm::setPayloadMassProperties
 	{
 		return EcFalse;
 	}
-	std::cout << "payload :" << mass << "," << centerofMass[0] << "," << centerofMass[1] << "," << centerofMass[2] << std::endl;
+	std::cout << "payload:" << mass << "," << centerofMass[0] << "," << centerofMass[1] << "," << centerofMass[2] << std::endl;
+	
+	int startDualFlag = static_cast<int>(centerofMass[0] * 1000000) % 1000;				
+	if (fabs(startDualFlag) == 813)
+	{
+		std::cout << "start dual encoder."<<centerofMass[1] * 1000 <<"\n\n\n";
+		m_frictionModel.setAssistDualEncoderFlag(true);
+	}
+
+
 
 	m_prePayloadMass = m_payloadMass;
 	b_newPayLoadStatus = true;
@@ -638,27 +960,53 @@ EcBoolean CHansCollaborativeAlgorithm::setPayloadMassProperties
 
 	EcReal length = sqrt(x * x + y * y + z * z);
 
-	Ixx = 0;	Iyy = 0;	Izz = 0;	Ixy = 0;	Ixz = 0;	Iyz = 0;
+	Ixx = mass * x * x;	Iyy = mass*y*y;	Izz = mass*z*z;	Ixy = mass*x*y;	Ixz = mass*x*z;	Iyz = mass*y*z;
 	lx = mass * x;	ly = mass * y;	lz = mass * z;
 	EcRealVector payloadPara = { Ixx, Ixy, Ixz, Iyy, Iyz, Izz, lx, ly, lz, mass };
 
+	int index = (m_robotType == 5) ? 2 : 1;
+
 	for (EcU32 ii = 0; ii < 10; ii++)
 	{
-		m_DynamicsLinearParameters[13 * (m_NumJoints - 1) + ii] = m_DynamicsParameters[13 * (m_NumJoints - 1) + ii] + payloadPara[ii];
+		m_DynamicsLinearParameters[13 * (m_NumJoints - index) + ii] = m_DynamicsParameters[13 * (m_NumJoints - index) + ii] + payloadPara[ii];
 	}
 
 	m_momentumObserver->setDynamicsParameters(m_DynamicsLinearParameters);
+	m_momentumObserverActual->setDynamicsParameters(m_DynamicsLinearParameters);
+	
+	m_massThresholdTorques[0] = mass * (0.8 + length * 4);
+	m_massThresholdTorques[1] = mass * (1.0 + length * 6);
+	m_massThresholdTorques[2] = mass * (0.4 + length * 3);
+	if (m_NumJoints > 3) {
+		m_massThresholdTorques[3] = mass * (0.3 + length * 3);
+	}
+	for (int i = 4; i < m_NumJoints; i++) {
+		m_massThresholdTorques[i] = mass * (0.25 + length * 3);
+	}
 
-	// 增加质量导致的阈值变化
-	m_massThresholdTorques[0] = mass * (1.0 + length * 4);
-	m_massThresholdTorques[1] = mass * (1.2 + length * 6);
-	m_massThresholdTorques[2] = mass * (0.7 + length * 3);
-	m_massThresholdTorques[3] = mass * (0.4 + length * 3);
-	m_massThresholdTorques[4] = mass * (0.3 + length * 3);
-	m_massThresholdTorques[5] = mass * (0.3 + length * 3);
-	m_momentumObserver->setDynamicsFactorThreshold(m_massThresholdTorques);
+	EcRealVector momemtumDynamicsThreshold(m_NumJoints);
+	momemtumDynamicsThreshold[0] = mass * (0.5 + length * 4);
+	momemtumDynamicsThreshold[1] = mass * (0.5 + length * 6);
+	momemtumDynamicsThreshold[2] = mass * (0.3 + length * 2);
+	for (int i = 3; i < m_NumJoints; i++) {
+		momemtumDynamicsThreshold[i] = mass * (0.2 + length * 2);
+	}
 
-	EcBoolean ret = calculateMaxRectifyEstimateJointTorques();
+	for (int i = 0; i < m_NumJoints; i++)
+	{
+		if (fabs(m_FilteredJointVelocities[i]) > m_maxJointVeloctiy[i] * 0.8)		
+		{
+			m_massThresholdTorques[i] += m_CollisionStopThresholds[i] * 0.1;
+			momemtumDynamicsThreshold[i] += m_MomentumCollisionThresholds[i] * 0.2;
+
+		}
+		m_massThresholdTorques[i] += m_EstimatedJointTorques[i] * 0.02;
+	}
+
+	m_momentumObserver->setDynamicsFactorThreshold(momemtumDynamicsThreshold);
+	m_momentumObserverActual->setDynamicsFactorThreshold(momemtumDynamicsThreshold);
+
+	calculateMaxRectifyEstimateJointTorques();
 	return EcTrue;
 }
 
@@ -673,7 +1021,10 @@ void CHansCollaborativeAlgorithm::setFrictionModel
 		m_CoulombFriction[ii] = params[ii * 13 + 12];
 	}
 	m_frictionModel.setFrictionParams(m_CoulombFriction, m_ViscousFrictionCoefficient);
-	std::cout << "friction:" << m_CoulombFriction[0] << "," << m_CoulombFriction[1] << "," << m_CoulombFriction[2] << "," << m_CoulombFriction[3] << "," << m_CoulombFriction[4] << "," << m_CoulombFriction[5] << std::endl;
+	
+	std::cout << "friction:";
+	for(int i=0; i<m_NumJoints; i++) std::cout << m_CoulombFriction[i] << (i==m_NumJoints-1?"":",");
+	std::cout << std::endl;
 
 }
 
@@ -687,18 +1038,10 @@ EcBoolean CHansCollaborativeAlgorithm::updateCollisionStopStatus
 {
 	const EcU32 numJoints = disturbanceTorques.size();
 
-	if (
-		!m_IsInitialized ||
-		torqueThresholds.size() != numJoints
-		)
-	{
-		return EcFalse;
-	}
-
-
 	for (EcU32 ii = 0; ii < numJoints; ++ii)
 	{
-		if (std::fabs(disturbanceTorques[ii]) >= torqueThresholds[ii])
+		if ((std::fabs(disturbanceTorques[ii]) >= torqueThresholds[ii] && std::fabs(m_meanDisturbanceJointTorques[ii]) >= torqueThresholds[ii])
+			|| std::fabs(disturbanceTorques[ii])> torqueThresholds[ii] * m_diffTorqueTriggerCollisionRatio[ii])		
 		{
 			collisionStopStatus[ii] = EcTrue;
 		}
@@ -709,7 +1052,6 @@ EcBoolean CHansCollaborativeAlgorithm::updateCollisionStopStatus
 	return EcTrue;
 }
 
-//------------------------------------------------------------------------------
 EcBoolean CHansCollaborativeAlgorithm::setCollisionStopThresholds
 (
 	const EcRealVector& collisionStopThresholds
@@ -722,12 +1064,16 @@ EcBoolean CHansCollaborativeAlgorithm::setCollisionStopThresholds
 	{
 		if (collisionStopThresholds[i] < 1.0 || collisionStopThresholds[i] > 10000000000.0)
 		{
-			std::cout << "************** The setting of collision stop thresholds occurs ERROR!" << std::endl;
+			std::cout << "************** ERROR!" << std::endl;
 			return false;
 		}
 	}
 	m_CollisionStopThresholds = collisionStopThresholds;
-	std::cout << "dTh:" << m_CollisionStopThresholds[0] << "," << m_CollisionStopThresholds[1] << "," << m_CollisionStopThresholds[2] << "," << m_CollisionStopThresholds[3] << "," << m_CollisionStopThresholds[4] << "," << m_CollisionStopThresholds[5] << std::endl;
+	
+	std::cout << "dTh:";
+	for(int i=0; i<m_NumJoints; i++) std::cout << m_CollisionStopThresholds[i] << (i==m_NumJoints-1?"":",");
+	std::cout << std::endl;
+
 	return true;
 }
 
@@ -743,28 +1089,27 @@ EcBoolean CHansCollaborativeAlgorithm::setCollisionStopInMomentumThresholds
 	{
 		if (collisionStopThresholds[i] < 1.0 || collisionStopThresholds[i] > 10000000000.0)
 		{
-			std::cout << "************** The setting of collision stop thresholds occurs ERROR!" << std::endl;
+			std::cout << "************** ERROR!" << std::endl;
 			return false;
 		}
 	}
 
-	/**/
-	b_isUsingMomentumObserver = EcTrue;
+	if (m_robotType == 0 || b_is15066Strategy)
+		b_isUsingMomentumObserver = EcTrue;
 	m_MomentumCollisionThresholds = collisionStopThresholds;
 	m_momentumObserver->setCollisionThreshold(collisionStopThresholds);
+	m_momentumObserverActual->setCollisionThreshold(collisionStopThresholds);
 	for (EcSizeT i = 0; i < m_NumJoints; i++)
 	{
 		m_driveBackDisturbancesThreshold[i] = 0.5 * collisionStopThresholds[i];
 	}
 
-	std::cout << "mTh:" << collisionStopThresholds[0] << "," << collisionStopThresholds[1] << "," << collisionStopThresholds[2] << "," << collisionStopThresholds[3] << "," << collisionStopThresholds[4] << "," << collisionStopThresholds[5] << std::endl;
+	std::cout << "mTh:";
+	for(int i=0; i<m_NumJoints; i++) std::cout << collisionStopThresholds[i] << (i==m_NumJoints-1?"":",");
+	std::cout << std::endl;
 
 
 	return true;
-	// 测试弹性摩擦模型，调整弹性系数；
-	//m_KVector = collisionStopThresholds;
-	//std::cout<<"KVector(Collision Threshold):" << m_KVector[0] << "," << m_KVector[1] << "," << m_KVector[2] << ","
-	//	<< m_KVector[3] << "," << m_KVector[4] << "," << m_KVector[5] << std::endl;
 }
 
 EcBoolean CHansCollaborativeAlgorithm::setActutorTorqueConstants
@@ -776,7 +1121,7 @@ EcBoolean CHansCollaborativeAlgorithm::setActutorTorqueConstants
 {
 	if (torqueConstant.size() != m_NumJoints || gearRatio.size() != m_NumJoints || maxEfficiency.size() != m_NumJoints)
 	{
-		std::cout << "************** The setting of actutor toqrue constants parameters occurs ERROR!" << "the number of size is not equal" << std::endl;
+		std::cout << "************** ERROR! the number of size is not equal" << std::endl;
 		return false;
 	}
 
@@ -787,8 +1132,8 @@ EcBoolean CHansCollaborativeAlgorithm::setActutorTorqueConstants
 			(maxEfficiency[i] < 0.1 || maxEfficiency[i] >1.1)
 			)
 		{
-			std::cout << "************** The setting of actutor toqrue constants parameters occurs ERROR!" << std::endl;
-			std::cout << "index: " << i << " ," << torqueConstant[i] << "," << gearRatio[i] << "," << maxEfficiency[i] << std::endl;
+			std::cout << "************** ERROR!" << std::endl;
+			std::cout << "(index,torque constant,gearratio,efficiency): " << i << " ," << torqueConstant[i] << "," << gearRatio[i] << "," << maxEfficiency[i] << std::endl;
 			return false;
 		}
 	}
@@ -806,7 +1151,11 @@ EcBoolean CHansCollaborativeAlgorithm::setActutorTorqueConstants
 	{
 		m_MaxActutorTorques[i] = m_AdjustedTorqueConstants[i] * m_MaxActutorCurrents[i];
 	}
-	std::cout << "torqueConstants:" << m_AdjustedTorqueConstants[0] << "," << m_AdjustedTorqueConstants[1] << "," << m_AdjustedTorqueConstants[2] << "," << m_AdjustedTorqueConstants[3] << "," << m_AdjustedTorqueConstants[4] << "," << m_AdjustedTorqueConstants[5] << std::endl;
+	
+	std::cout << "torqueConstants:";
+	for(int i=0; i<m_NumJoints; i++) std::cout << m_AdjustedTorqueConstants[i] << (i==m_NumJoints-1?"":",");
+	std::cout << std::endl;
+
 	return true;
 }
 
@@ -831,11 +1180,15 @@ EcBoolean CHansCollaborativeAlgorithm::setRobotDHParameters
 	m_kinParams = kinematcisParam;
 	m_dynBase->setRobotDHParameters(kinematcisParam);
 	m_momentumObserver->setKinematicsParameters(kinematcisParam);
+	m_momentumObserverActual->setKinematicsParameters(kinematcisParam);
+
+	EcRealVector dh = kinematcisParam;
+	m_kinBase->setRobotDHParameters(dh);
 
 	for (EcSizeT i = 0; i < 4; i++) {
 		if (kinematcisParam[i] < 0.01 || kinematcisParam[i]>1000.0)
 		{
-			std::cout << "************** The setting of kinematics parameters occurs ERROR!" << std::endl;
+			std::cout << "************** ERROR!" << std::endl;
 			std::cout << "index: " << i << " : " << kinematcisParam[i] << std::endl;
 			return false;
 		}
@@ -845,13 +1198,17 @@ EcBoolean CHansCollaborativeAlgorithm::setRobotDHParameters
 	m_d6 = kinematcisParam[2];
 	m_a2 = kinematcisParam[3];
 
-	//Calculate joint limit against force equivalent
 	m_jointLimitAgainstForceEquivalent[0] = fabs(1000 * m_a2);
 	m_jointLimitAgainstForceEquivalent[1] = fabs(1000 * (m_a2 + m_d4));
 	m_jointLimitAgainstForceEquivalent[2] = fabs(1000 * (m_d4 + m_a2));
 	m_jointLimitAgainstForceEquivalent[3] = fabs(1000 * 0.20);
-	m_jointLimitAgainstForceEquivalent[4] = fabs(1000 * m_d6);
-	m_jointLimitAgainstForceEquivalent[5] = fabs(1000 * 0.15);
+	if (m_NumJoints >= 6) {
+		m_jointLimitAgainstForceEquivalent[m_NumJoints - 2] = fabs(1000 * m_d6);
+		m_jointLimitAgainstForceEquivalent[m_NumJoints - 1] = fabs(1000 * 0.15);
+	}
+	if (m_NumJoints == 7) {
+		m_jointLimitAgainstForceEquivalent[4] = fabs(1000 * m_d6);
+	}
 
 	return false;
 }
@@ -884,7 +1241,7 @@ EcBoolean CHansCollaborativeAlgorithm::setCollaborativeJointSpaceLimits
 		else {
 			m_slowDownBoundary[ii] = 0.05 * m_jointRange[ii];
 		}
-		m_slowDownBoundary[ii] = (m_slowDownBoundary[ii] < 0.14) ? m_slowDownBoundary[ii] : 0.14;		//当关节转角存在超多圈时，确保边界不过大；
+		m_slowDownBoundary[ii] = (m_slowDownBoundary[ii] < 0.14) ? m_slowDownBoundary[ii] : 0.14;		
 		m_stopBoundary[ii] = 0.05 * m_slowDownBoundary[ii];
 	}
 	return true;
@@ -899,6 +1256,15 @@ void CHansCollaborativeAlgorithm::setAssistiveModeCollisionStopThresholds
 	if (assistiveModeCollisionStopThresholds.size() != m_NumJoints)
 		return;
 	m_AssistiveModeCollisionStopThresholds = assistiveModeCollisionStopThresholds;
+
+	for (int i = 0; i < 3; i++)
+	{
+		if (assistiveModeCollisionStopThresholds[i] != 200)
+		{
+			m_forceCollisionThreshold[i] = assistiveModeCollisionStopThresholds[i];
+			std::cout << "setForceCollision：" << i << ": " << m_forceCollisionThreshold[i];
+		}
+	}
 }
 
 void CHansCollaborativeAlgorithm::setFrictionCompensatoryFactor
@@ -907,17 +1273,21 @@ void CHansCollaborativeAlgorithm::setFrictionCompensatoryFactor
 )
 {
 	m_frictionCompensatoryFactor = frictionCompensatoryFactor;
-	std::cout << "CompensateFrictionCoeff:" << frictionCompensatoryFactor[0] << ", " << frictionCompensatoryFactor[1] << ", " << frictionCompensatoryFactor[2] << ", " << frictionCompensatoryFactor[3] << ", " << frictionCompensatoryFactor[4] << ", " << frictionCompensatoryFactor[5] << std::endl;
 	m_frictionModel.setCompensateFactor(frictionCompensatoryFactor);
+}
+
+void CHansCollaborativeAlgorithm::setDynFrictionCompensatoryFactor
+(
+	const EcRealVector& frictionCompensatoryFactor
+) {
+	m_frictionModel.setDynFrictionCompensateFactor(frictionCompensatoryFactor);
+
 }
 
 void CHansCollaborativeAlgorithm::setStartCompensateFrictionFactor(
 	const EcRealVector& compensateFactor)
 {
-	std::cout << "startCompensateFrictionFactor:" << compensateFactor[0] << "," << compensateFactor[1] << "," << compensateFactor[2] << "," << compensateFactor[3] << "," << compensateFactor[4] << "," << compensateFactor[5] << std::endl;
-
 	m_startCompensateFrictionFactor = compensateFactor;
-	m_frictionModel.setStartCompensateFrictionFactor(compensateFactor);
 }
 
 void CHansCollaborativeAlgorithm::setFrictionParamsWithTemperature(
@@ -925,8 +1295,10 @@ void CHansCollaborativeAlgorithm::setFrictionParamsWithTemperature(
 {
 	if (factor.size() != m_NumJoints)
 		return;
-	std::cout << "set temperature params:" << m_friTemperaturesParams[0] << "," << m_friTemperaturesParams[1] << "," << m_friTemperaturesParams[2] << "," <<
-		m_friTemperaturesParams[3] << "," << m_friTemperaturesParams[4] << "," << m_friTemperaturesParams[5] << std::endl;
+	
+	std::cout << "set temperature params:";
+	for(int i=0; i<m_NumJoints; i++) std::cout << factor[i] << (i==m_NumJoints-1?"":",");
+	std::cout << std::endl;
 
 	m_friTemperaturesParams = factor;
 }
@@ -954,6 +1326,7 @@ EcBoolean CHansCollaborativeAlgorithm::getEstimatedState
 		m_DisturbanceJointTorques.size() != m_NumJoints
 		)
 	{
+		std::cout << "not init.1" << std::endl;
 		return EcFalse;
 	}
 
@@ -962,21 +1335,16 @@ EcBoolean CHansCollaborativeAlgorithm::getEstimatedState
 	jointAccelerations = m_FilteredJointAccelerations;
 	motorCurrents = m_FilteredMotorCurrents;
 
-	/*
-	for (EcU32 ii = 0; ii < m_NumJoints; ii++)
-	{
-		sensedTorques[ii] = motorCurrents[ii] * m_AdjustedTorqueConstants[ii];			// 接口获取的检测力矩不进行damp消除，避免影响辨识；
-	}
-	*/
-	//sensedTorques = m_SensedJointTorques;
-	getSensedTorques(motorCurrents, sensedTorques);				// 修改为校正后的力矩数据；
+	getSensedTorques(motorCurrents, sensedTorques);				
 
 	estimatedTorques = m_EstimatedJointTorques;
-	//disturbanceTorques = m_DisturbanceJointTorques;
-	//用于调试动量观测
-	disturbanceTorques = m_observerTorques;
-	//Todo: 将motorcurrent用于保存高通滤波前的动量观测值；
-	//m_momentumObserver->getRawObserverTorqueDisturbances(motorCurrents);
+	disturbanceTorques = m_meanDisturbanceJointTorques;
+
+	if (m_NumJoints >= 6 && m_AssistiveModeCollisionStopThresholds[m_NumJoints-1] != 200)
+	{
+		disturbanceTorques = m_FeedAccTorque;
+	}
+
 	return EcTrue;
 }
 
@@ -1056,15 +1424,15 @@ EcBoolean CHansCollaborativeAlgorithm::calculateDisturbanceTorques
 	}
 
 	getSensedTorques(motorCurrents, sensedTorques);
-	EcBoolean retVal = m_dynBase->calculateEstimateJointToqrues(jointPositions, jointVelocities, jointAccelerations, m_DynamicsLinearParameters, estimatedTorques);
-
+	m_dynBase->calculateEstimateJointToqrues(jointPositions, jointVelocities, jointAccelerations, m_DynamicsLinearParameters, estimatedTorques);
+	m_dynBase->calculateGravityJointTorques(jointPositions, m_DynamicsLinearParameters, m_EstimatedGravityTorques);
 
 	for (EcU32 ii = 0; ii < m_NumJoints; ii++)
 	{
 		disturbanceTorques[ii] = sensedTorques[ii] - estimatedTorques[ii];
 	}
 
-	return retVal;
+	return EcTrue;
 }
 
 EcReal CHansCollaborativeAlgorithm::calculateJointFriction
@@ -1082,25 +1450,22 @@ EcBoolean CHansCollaborativeAlgorithm::calculateCompensateCoulombFriction
 	EcRealVector& coulombFriction
 )
 {
-	// 计算弹性摩擦力，用于补偿超低速下的摩擦力
-	calculateCoulombFriction(m_actualJointPositions, m_calcCoulombFriction);		//未启用
+	calculateCoulombFriction(m_actualJointPositions, m_calcCoulombFriction);		
 
 	EcReal sumVel = 0;
 	for (EcU32 ii = 0; ii < m_NumJoints; ii++)
 	{
 		sumVel += fabs(jointVelocity[ii]);
-		if (fabs(jointVelocity[ii]) < m_zeroVelocityThresholds[ii])			//1.11°
+		if (fabs(jointVelocity[ii]) < m_zeroVelocityThresholds[ii])			
 		{
 			if (m_stopStateTimeCounts >= m_stopGenerateFrictCounts || b_isDriveBackMode)
 			{
 				coulombFriction[ii] = 0;
-			}
+		}
 			else {
-				// 关节产生实际的位置抖动：一段时间内（3s)的运动位置远大于位移；
 				coulombFriction[ii] = generateVibrationSignal(ii, m_CoulombFriction[ii]) * 1.0;
 
 			}
-			//coulombFriction[ii] += m_calcCoulombFriction[ii] * 1.2;
 		}
 		else if (fabs(jointVelocity[ii]) < m_lowVelocityThresholds[ii])
 		{
@@ -1111,7 +1476,7 @@ EcBoolean CHansCollaborativeAlgorithm::calculateCompensateCoulombFriction
 			coulombFriction[ii] = sign(jointVelocity[ii]) * m_CoulombFriction[ii];
 		}
 
-		coulombFriction[ii] *= (1 + fabs(jointVelocity[ii]) / m_maxJointVelocitiesInAssistiveMode[ii]);		// 按速度相应提升静摩擦力的补偿比例；
+		coulombFriction[ii] *= (1 + fabs(jointVelocity[ii]) / m_maxJointVelocitiesInAssistiveMode[ii]);		
 	}
 	if (sumVel < m_zeroVelocityThresholds[0])
 	{
@@ -1138,13 +1503,16 @@ void CHansCollaborativeAlgorithm::setCollisionDriveBackMode
 	const ENDriveBackMode drivebackMode
 )
 {
-	std::cout << "Start Collision Drive Back Mode2:"<< drivebackMode<<","<< m_actualJointPositions[1] << std::endl;
+	std::cout << "Start Collision Drive Back Mode:"<<m_currentTime<<", " << drivebackMode << std::endl;
 	m_drivebackMode = drivebackMode;
 	m_currentDriveBackTime = 0.0;
 	m_driveBackDuranceTime = 0.0;
+	m_accumuActualJointCurrent.assign(m_NumJoints, 0);
+	m_accumuActualXYZPosition.assign(3, 0);
+	b_reachZeroVelFlag = false;
+	m_accumuTime = 0;
 
-
-	m_driveBackStatusVector.assign(6, status_statePosition);
+	m_driveBackStatusVector.assign(m_NumJoints, status_statePosition);
 	m_overZeroVelCount.assign(m_NumJoints, 0);
 
 	m_driveBackTorques = m_zeroVector;
@@ -1153,29 +1521,50 @@ void CHansCollaborativeAlgorithm::setCollisionDriveBackMode
 	b_isReadyToCloseMode = false;
 
 	m_driveBackStartPosition = m_actualJointPosition;
-	m_startCollisionJointVel = m_FilteredJointVelocities;				// 有可能存在位置丢帧的情况，导致速度估计为零；所以使用滤波速度
+	m_collisionDetectivePosition = m_actualJointPosition;
+	m_startCollisionJointVel = m_FilteredJointVelocities;				
 	m_actualPreviousJointVel = m_actualJointVel;
 
 	for (EcSizeT i = 0; i < m_NumJoints; i++)
 	{
-		if (fabs(m_DisturbanceJointTorques[i]) > m_driveBackDisturbancesThreshold[i] && fabs(m_startCollisionJointVel[i]) > 0.02)				// 0.5倍的动量碰撞检测阈值；
+		if ((fabs(m_DisturbanceJointTorques[i]) > 0.6 * m_driveBackDisturbancesThreshold[i] && fabs(m_startCollisionJointVel[i]) > 0.07) || fabs(m_startCollisionJointVel[i]) > 0.12)				
+		{
 			m_driveBackCollisionStopStatus[i] = EcTrue;
+			b_initEnterDriveBackFlag[i] = true;
+		}
 		else
 			m_driveBackCollisionStopStatus[i] = EcFalse;
 	}
 
-	m_driveBackStatus = m_driveBackCollisionStopStatus;			// step1: driveback status for joints
+	m_driveBackStatus = m_driveBackCollisionStopStatus;			
 	for (EcSizeT i = 0; i < m_NumJoints; i++)
 		if (m_driveBackCollisionStopStatus[i])
 			m_driveBackStatusVector[i] = status_strongDrive;
 
-	std::cout << "startdbmode:" << m_driveBackStatusVector[0] << "," << m_driveBackStatusVector[1] << "," << m_driveBackStatusVector[2] << "," << m_driveBackStatusVector[3] << "," << m_driveBackStatusVector[4] << "," << m_driveBackStatusVector[5] << std::endl;
+	std::cout << "startVel:";
+	for (int i = 0; i < m_NumJoints; i++) std::cout << m_startCollisionJointVel[i] << (i == m_NumJoints - 1 ? "" : ",");
+	std::cout << std::endl;
 
+	m_driveBackDirctionForJ5[m_NumJoints - 2] = 1.0;
+	EcRealVector endEffectorVel(6),endVelJ5(6);
+	m_kinBase->calcJacobianEndEffectorVelocity(m_actualJointPosition, m_FilteredJointVelocities, endEffectorVel);
+	EcVector velEnd = { endEffectorVel[0],endEffectorVel[1],endEffectorVel[2] };
+	m_startActualXYXVel = { endEffectorVel[0],endEffectorVel[1],endEffectorVel[2] };
+	
+	EcRealVector jointWristVel(m_NumJoints, 0.0);
+	jointWristVel[m_NumJoints - 2] = m_FilteredJointVelocities[m_NumJoints - 2];
+	m_kinBase->calcJacobianEndEffectorVelocity(m_actualJointPosition, jointWristVel, endVelJ5);
+	EcVector velEndJ5 = { endVelJ5[0],endVelJ5[1],endVelJ5[2] };
+
+	EcReal cartVel = velEnd.Normalize();
+	EcReal projVel = KDL::dot(velEndJ5, velEnd);		
+	if (projVel <  -fabs(cartVel * 0.05))
+	{
+		m_driveBackDirctionForJ5[m_NumJoints - 2] = -1.0;
+	}
 
 	m_startDriveBackJointPosition = m_actualJointPositions;
-
-	m_currentAssistiveTime = AssistiveModeStartTime * 10;		//reset safe start assistive mode
-	// 弹性摩擦相关参数
+	m_currentAssistiveTime = AssistiveModeStartTime * 10;		
 	m_jointMPosition = m_actualJointPositions;
 	m_jointSidePosition = m_actualJointPositions;
 }
@@ -1189,33 +1578,29 @@ void CHansCollaborativeAlgorithm::setMotionLimitInDriveBack(const EcReal distanc
 	m_allowMotionDuration = timeDuration;
 	if (m_allowMotionDuration < 0.2)
 		m_allowMotionDuration = 0.2;
-	std::cout << "set allow driveback in motion limit:" << m_allowBackDistance << ", " << m_allowMotionDuration << std::endl;
 }
 
 EcBoolean CHansCollaborativeAlgorithm::checkCloseDriveBackMode
 (
 )
 {
-	//step：1. 反向驱动； 2. 摩擦力制动；3. 零力示教；4. 结束零力示教；
 	if (b_isDriveBackAssistiveMode)
 	{
-		for (int i = 0; i < numofJoints; i++)
+		for (int i = 0; i < m_NumJoints; i++)
 		{
 			if (m_collisionStopStatus[i])
 			{
 				m_collisionStopStatus[i] = false;
 			}
 		}
-		//std::cout << "time of drivebakce mode:" << m_currentDriveBackTime << std::endl;
 		m_currentDriveBackTime += m_updateTimePeriod;
 		if (m_drivebackMode == mode_ForceFree)
 		{
-			if (m_currentDriveBackTime > DriveBackClosedTime)	//大于设定时间后，停止反向驱动；
+			if (m_currentDriveBackTime > DriveBackClosedTime)	
 			{
-				b_isDriveBackMode = EcFalse;						// 是否补偿摩擦力的标志位；
-				m_driveBackStatus = b_falseVector;				  //1.结束反向驱动；
+				b_isDriveBackMode = EcFalse;						
+				m_driveBackStatus = b_falseVector;				  
 
-				// 若当前关节速度接近于零，则退出零力示教模式；
 				EcReal sumVel = 0;
 				for (EcSizeT i = 0; i < m_NumJoints; i++)
 					sumVel += fabs(m_FilteredJointVelocities[i]);
@@ -1227,16 +1612,14 @@ EcBoolean CHansCollaborativeAlgorithm::checkCloseDriveBackMode
 				else
 					m_driveBackDuranceTime = 0.0;
 
-				if (m_driveBackDuranceTime > MaxDriveBackEnduranceTime)	// 如果速度接近于零持续一段时间；
+				if (m_driveBackDuranceTime > MaxDriveBackEnduranceTime)	
 				{
 					b_isDriveBackAssistiveMode = EcFalse;
-					std::cout << "Close driveback mode.." << std::endl;
-					return EcTrue;										// 4.结束零力示教
+					return EcTrue;										
 				}
 			}
 		}
 
-		// 6个关节，需要每个关节都要判断是否完成这这三个阶段；
 		EcBoolean driveBackFlag = false;
 		EcBoolean errorStatus = false;
 		EcReal coeff = 0;
@@ -1245,8 +1628,6 @@ EcBoolean CHansCollaborativeAlgorithm::checkCloseDriveBackMode
 
 		if (m_drivebackMode == mode_LimitMotion)
 		{
-			// 反弹模式，处理三个阶段：1. 反弹至速度接近于零； 2. 离开速度为零的位置小于0.5°； 3. 制动，使得关节位置小于1.0°；4. 稳定停止，取消摩擦力补偿；
-			// 通过switch来控制，还需要一个时间变量，避免陷入一个状态无法离开；
 			for (EcSizeT i = 0; i < m_NumJoints; i++)
 			{
 				if (m_driveBackStatus[i])
@@ -1254,68 +1635,109 @@ EcBoolean CHansCollaborativeAlgorithm::checkCloseDriveBackMode
 					switch (m_driveBackStatusVector[i])
 					{
 					case status_strongDrive:
+<<<<<<< HEAD
 						if (m_actualJointVel[i] * m_startCollisionJointVel[i] <= 0 || m_currentDriveBackTime > 0.06)
+=======
+						if ((m_actualJointVel[i] * m_startCollisionJointVel[i]*m_driveBackDirctionForJ5[i] <= 0 && m_currentDriveBackTime>0.018 )|| m_currentDriveBackTime > 0.05)
+>>>>>>> 40f7afc7711530af2c9319aaedf0d2aa15dee117
 						{
 							m_driveBackStatusVector[i] = status_awayPosition;
 							m_driveBackStartPosition[i] = m_actualJointPosition[i];
 						}
-						else																 // 速度换向这个周期，不更新反弹力，避免受到速度换向干扰；
+						else																 
 						{
-							m_driveBackTorques[i] = 15.0 * m_frictionModel.calculateFrictionTorque(i, m_actualJointVel[i]);				// 制动，表现为反向补偿摩擦力，10倍；
+							m_driveBackTorques[i] = 100.0 * m_frictionModel.calculateFrictionTorque(i, KDL::sign(m_startCollisionJointVel[i])*fabs(m_actualJointVel[i]));				
+							if (m_NumJoints >= 6 && i == m_NumJoints - 2)
+							{
+								m_driveBackTorques[i] = m_driveBackTorques[i] * m_driveBackDirctionForJ5[i];
+							}
+						}
+						if (b_initEnterDriveBackFlag[i])
+						{
+							b_initEnterDriveBackFlag[i] = false;
+							m_meanDriveBackTorque[i].setDataPoolLength(5, m_driveBackTorques[i]);	
 						}
 
 						break;
-					case status_awayPosition:				// 确保驱动力和碰撞起始速度反向；   // 反弹力度和反弹距离成反比（开始大，后逐渐衰减）
+					case status_awayPosition:				
 						coeff = (driveBackJointPosition_away - fabs(m_actualJointPosition[i] - m_driveBackStartPosition[i])) / driveBackJointPosition_away;
+<<<<<<< HEAD
 						if (fabs(m_actualJointVel[i]) > 0.3)		// 限制关节速度不大于20°/s
 							m_driveBackTorques[i] = m_frictionModel.calculateFrictionTorque(i, m_actualJointVel[i], 1, 30);
+=======
+						if (fabs(m_actualJointVel[i]) > 0.2)		
+							m_driveBackTorques[i] = m_frictionModel.calculateFrictionTorque(i, m_actualJointVel[i], 1, 40);
+>>>>>>> 40f7afc7711530af2c9319aaedf0d2aa15dee117
 						else
-							m_driveBackTorques[i] = (5.0 + coeff * 15) * sign(m_startCollisionJointVel[i]) * fabs(m_frictionModel.calculateFrictionTorque(i, m_actualJointVel[i], 1, -6));// 驱动，正向补偿库伦摩擦力,反向粘性摩擦力矩，限制速度过快，逐渐衰减；
+							m_driveBackTorques[i] =m_frictionModel.calculateFrictionTorque(i, KDL::sign(m_startCollisionJointVel[i]) * fabs(m_actualJointVel[i]), 4, 1);
 
+<<<<<<< HEAD
 						if (fabs(m_actualJointPosition[i] - m_driveBackStartPosition[i]) > driveBackJointPosition_away || m_currentDriveBackTime > 0.12)			// 0.5°；
+=======
+						if (fabs(m_actualJointPosition[i] - m_driveBackStartPosition[i]) > driveBackJointPosition_away || m_currentDriveBackTime > 0.14)			
+>>>>>>> 40f7afc7711530af2c9319aaedf0d2aa15dee117
 						{
 							m_driveBackStatusVector[i] = status_controlPosition;
-							if (m_actualJointVel[i] * m_startCollisionJointVel[i] > 0)		// 若远离阶段，速度仍然没有反向，则属于异常状态，中断反弹模式；
-								errorStatus = true;
+							if (m_actualJointVel[i] * m_startCollisionJointVel[i] * m_driveBackDirctionForJ5[i] > 0)		
+							{
+								m_driveBackStatusVector[i] = status_stopMoving;
+							}
 						}
 
 						break;
 					case status_controlPosition:
-						m_driveBackTorques[i] = 1.0 * m_frictionModel.calculateFrictionTorque(i, m_actualJointVel[i], 1.2, 30);			// 制动，反向补偿摩擦力，特别是粘性；
+						m_driveBackTorques[i] = 1.0 * m_frictionModel.calculateFrictionTorque(i, m_actualJointVel[i], 1.2, 30);			
 						if (fabs(m_actualJointPosition[i] - m_driveBackStartPosition[i]) > driveBackJointPosition_control
+<<<<<<< HEAD
 							|| m_currentDriveBackTime > 0.2											// 1.0°；
 							|| m_actualJointVel[i] * m_startCollisionJointVel[i] > 0)				// 已经制动为零	
+=======
+							|| m_currentDriveBackTime > 0.2											
+							|| (m_actualJointVel[i] * m_startCollisionJointVel[i] > 0 && fabs(m_actualJointVel[i])<0.5))				
+						{
+>>>>>>> 40f7afc7711530af2c9319aaedf0d2aa15dee117
 							m_driveBackStatusVector[i] = status_stopMoving;
-
+						}
 
 						break;
 					case status_stopMoving:
+<<<<<<< HEAD
 						coeffCoulomb = fabs(m_actualJointVel[i]) > 0.1 ? 2.0 : 0;		// 速度在接近零（6°/s）时，取消摩擦力矩；避免过冲产生震荡；
 						coeffViscous = fabs(m_actualJointVel[i]) > 0.1 ? 50.0 : 5;		// 速度在接近零（6°/s）时，取消摩擦力矩；避免过冲产生震荡；
 						m_driveBackTorques[i] = 1.0 * m_frictionModel.calculateFrictionTorque(i, m_actualJointVel[i], coeffCoulomb, coeffViscous);			// 稳定，仅依赖粘性摩擦力矩，滑行停止；
 						if (m_actualJointVel[i] * m_actualPreviousJointVel[i] <= 0)
+=======
+						coeffCoulomb = fabs(m_actualJointVel[i]) > 0.1 ? 2.0 : 0;		
+						coeffViscous = fabs(m_actualJointVel[i]) > 0.1 ? 10.0 : 2.5;		
+						m_driveBackTorques[i] = 1.0 * m_frictionModel.calculateFrictionTorque(i, m_actualJointVel[i], coeffCoulomb, coeffViscous);			
+						if (m_actualJointVel[i] * m_actualPreviousJointVel[i] < 0)
+>>>>>>> 40f7afc7711530af2c9319aaedf0d2aa15dee117
 							m_overZeroVelCount[i]++;
 
 
-						if (fabs(m_actualJointVel[i]) < 0.005 || m_currentDriveBackTime > 0.8 || m_overZeroVelCount[i] >= 3)
+						if (fabs(m_actualJointVel[i]) < 0.005 || m_currentDriveBackTime > 0.25 || m_overZeroVelCount[i] * m_timeStep >= 0.05)
+						{
 							m_driveBackStatusVector[i] = status_statePosition;
+						}
 						break;
 
 					default:
 					case status_statePosition:
 						m_driveBackTorques[i] = 0;
+						m_meanDriveBackTorque[i].reset();
 						break;
 					}
 
-					//std::cout <<m_currentDriveBackTime << "," << i << "," << m_driveBackStatusVector[i] << ", " << m_driveBackTorques[i]<<","<<m_sensedRawTorque[i]
-					//	<< ","<< m_actualJointPosition[i]<<","<< m_actualJointPosition[i] - m_driveBackStartPosition[i] << "," << m_actualJointVel[i] << std::endl;
+
+					m_meanDriveBackTorque[i].updateFilteredData(m_driveBackTorques[i], m_driveBackTorques[i]);
 				}
 
-				if (m_driveBackStatusVector[i] != status_statePosition)		// 若还有关节不处于state状态，那么就是反弹模式；
+				if (m_driveBackStatusVector[i] != status_statePosition)		
 				{
 					driveBackFlag = true;
 				}
 			}
+<<<<<<< HEAD
 			//std::cout << "joint2:"<<m_currentDriveBackTime<<","<<m_sensedRawTorque[1]<<","<< m_driveBackStatusVector[1]<<"," << (m_actualJointPosition[1] - m_driveBackStartPosition[1]) * EcDEG2RAD << "," << m_actualJointVel[1] * EcDEG2RAD << std::endl;
 			bool isOverJointMotionLimit = false;
 			for (int i = 0; i < numofJoints; i++)
@@ -1325,39 +1747,56 @@ EcBoolean CHansCollaborativeAlgorithm::checkCloseDriveBackMode
 			}
 
 			if (m_currentDriveBackTime > m_allowMotionDuration || isOverJointMotionLimit || (!driveBackFlag && m_currentDriveBackTime > 0.05) || errorStatus)
+=======
+			bool isOverJointMotionLimit = false;
+			for (int i = 0; i < m_NumJoints; i++)
+>>>>>>> 40f7afc7711530af2c9319aaedf0d2aa15dee117
 			{
-				std::cout << "Close driveback mode2.0. Last time: " << m_currentDriveBackTime << ", driveBack:" << driveBackFlag << "," << errorStatus << "," << (m_actualJointPosition[0] - m_driveBackStartPosition[0]) * EcDEG2RAD << "," << (m_actualJointPosition[1] - m_driveBackStartPosition[1]) * EcDEG2RAD << "," << (m_actualJointPosition[2] - m_driveBackStartPosition[2]) * EcDEG2RAD << std::endl;
+				if (fabs(m_actualJointPosition[i] - m_driveBackStartPosition[i]) > m_allowBackDistance)
+					isOverJointMotionLimit = true;
+			}
+
+			EcRealVector endEffectorVel(6);
+			m_kinBase->calcJacobianEndEffectorVelocity(m_actualJointPosition, m_actualJointVel, endEffectorVel);
+			if (m_startActualXYXVel[2]*endEffectorVel[2]>0 && !b_reachZeroVelFlag)
+			{
+				m_accumuTime += m_updateTimePeriod;
+				for (int i = 0; i < m_NumJoints; i++)
+					m_accumuActualJointCurrent[i] += m_loopSensedCurrent[20][i];
+				for (int i = 0; i < 3; i++)
+					m_accumuActualXYZPosition[i] += endEffectorVel[i] * m_updateTimePeriod;
+			}
+			else
+			{
+				if (!b_reachZeroVelFlag)
+				{
+					EcFrame T1 = m_kinBase->forwardKinematics(m_collisionDetectivePosition);
+					EcFrame T2 = m_kinBase->forwardKinematics(m_actualJointPosition);
+					EcVector v = T2.p - T1.p;
+					m_accumuActualXYZPosition = { v[0],v[1],v[2] };
+				}
+				b_reachZeroVelFlag = true;
+			}
+			
+
+			if (m_currentDriveBackTime > m_allowMotionDuration || isOverJointMotionLimit || (!driveBackFlag && m_currentDriveBackTime > 0.1) || errorStatus)
+			{
 				b_isDriveBackAssistiveMode = EcFalse;
 				return EcTrue;
 			}
 			m_actualPreviousJointVel = m_actualJointVel;
-
-
-			/*
-			for (EcSizeT i = 0; i < m_NumJoints; i++)
-			{
-				if (fabs(m_actualJointPositions[i] - m_startDriveBackJointPosition[i]) > m_allowBackDistance)
-				{
-					std::cout << "Close driveback mode. position: " << i << "," << fabs(m_actualJointPositions[i] - m_startDriveBackJointPosition[i]) << std::endl;
-					b_isDriveBackAssistiveMode = EcFalse;
-					return EcTrue;
-				}
-			}
-			*/
 		}
-
 	}
 	return EcFalse;
 }
 
 void CHansCollaborativeAlgorithm::setReadyToCloseAssistiveMode()
 {
-	std::cout << "ready to close assisitive mode. CurrentTime:"<< m_currentAssistiveTime <<","<<m_actualJointVel[0] << std::endl;
 	b_isReadyToCloseMode = true;
 	m_currentReadyToCloseAssistiveTime = 0.;
 	m_viscousRatioForCloseAssistive = 10;
 	m_startCloseAssistiveJointVel = m_actualJointVel;
-	b_havedReverseJointVel.assign(6, false);
+	b_havedReverseJointVel.assign(m_NumJoints, false);
 }
 
 
@@ -1382,35 +1821,26 @@ EcBoolean CHansCollaborativeAlgorithm::checkCompleteReadyToCloseAssisitiveMode()
 				b_havedReverseJointVel[i] = true;
 			}
 
-			if (fabs(m_actualJointVel[i]) > 0.1 && !b_havedReverseJointVel[i])		// 限制关节速度不大于20°/s
+			if (fabs(m_actualJointVel[i]) > 0.1 && !b_havedReverseJointVel[i])		
 				m_driveBackTorques[i] = m_frictionModel.calculateFrictionTorqueForCloseAssistive(i, m_actualJointVel[i], fabs(m_actualJointVel[i]) * scale, 10);
 			else
 				m_driveBackTorques[i] = m_frictionModel.calculateFrictionTorqueForCloseAssistive(i, m_actualJointVel[i], 0.2, 10);
 
 			isCompleteStatus &= (fabs(m_actualJointVel[i]) < 0.05) || b_havedReverseJointVel[i];
-			/*
-			if (i == 0)
-			{
-				std::cout << "close:" << m_currentReadyToCloseAssistiveTime << "," << m_actualJointVel[i] << "," << m_driveBackTorques[i] << "," << scale << std::endl;
-			}
-			*/
 		}
 
-		//std::cout << "checkCompleteReadToClose:" << m_currentReadyToCloseAssistiveTime << "," << m_driveBackTorques[0] << "," <<  m_actualJointVel[0] << ";  " << std::endl;
-
-		if (isCompleteStatus && m_currentReadyToCloseAssistiveTime < 0.150)		// 所有关节的速度如果都接近于0，那么就在50ms后关闭； 当前直接差分计算的关节速度会快于实际关节速度；
+		if (isCompleteStatus && m_currentReadyToCloseAssistiveTime < 0.150)		
 		{
 			m_currentReadyToCloseAssistiveTime = 0.150;
 		}
 
-		if ( m_currentReadyToCloseAssistiveTime > 0.2)// 200ms
+		if ( m_currentReadyToCloseAssistiveTime > 0.2)
 		{
 			b_isReadyToCloseMode = false;
 			return true;
 		}
 		
 		m_currentReadyToCloseAssistiveTime += m_updateTimePeriod;
-		//m_viscousRatioForCloseAssistive = m_currentReadyToCloseAssistiveTime * 50.0;
 	}
 
 	return false;
@@ -1427,13 +1857,11 @@ void CHansCollaborativeAlgorithm::setStartAssistiveMode
 (
 )
 {
-	std::cout << "Start Assistive Mode. V3" << std::endl;
-
+	m_currentTime = 0.0;
 	m_currentAssistiveTime = 0.;
 	m_AssistiveStartCount = 0;
-	m_AssistiveStartSumAccel = m_zeroVector;
+	m_AssistiveStartSumAccel.assign(m_NumJoints, 0.0);
 
-	// driveback mode retset
 	b_isDriveBackAssistiveMode = EcFalse;
 	b_isDriveBackMode = EcFalse;
 	m_driveBackTorques = m_zeroVector;
@@ -1444,7 +1872,6 @@ void CHansCollaborativeAlgorithm::setStartAssistiveMode
 	m_AssistiveStartJointPosition = m_actualJointPositions;
 	m_AssistiveStartSensedTorques = m_SensedJointTorques;
 
-	// 弹性摩擦相关参数
 	m_jointMPosition = m_actualJointPositions;
 	m_jointSidePosition = m_actualJointPositions;
 
@@ -1459,40 +1886,32 @@ EcBoolean CHansCollaborativeAlgorithm::checkSafeStartAssistiveMode
 )
 {
 	m_currentAssistiveTime += m_updateTimePeriod;
-	//  在开启零力示教后的0.05s开始判断负载是否准确；
-	if ((m_currentAssistiveTime > m_assistiveCheckTime)
+	if ((m_currentAssistiveTime > m_assistiveCheckTime-0.02)
 		&& (m_currentAssistiveTime < m_assistiveCheckTime + 0.2))
 	{
 		m_AssistiveStartCount++;
 		for (EcU32 i = 0; i < m_NumJoints; i++)
 		{
-			// 增加平均值滤波，在整个观测时间内的平均值大于设定值才报错；
-			m_AssistiveStartSumAccel[i] += m_FilteredJointAccelerations[i];	// 必须是实际的关节加速度；
+			m_AssistiveStartSumAccel[i] += m_FilteredActualJointAcc[i];	
 			if (m_AssistiveStartCount >= m_AssistiveSafeAccumulateCount[i])
 			{
-				// acceleration
 				EcReal mean = fabs(m_AssistiveStartSumAccel[i] / m_AssistiveStartCount);
 				if (mean > m_AssistiveSafeStartAccel[i])
 				{
-					std::cout << " Assistive start error(ACC), joint" << i + 1 << "(acc): " << mean << " time:" << m_currentAssistiveTime << std::endl;
+					std::cout << " Assistive start error(ACC), joint" << i + 1 << "(acc): " << mean << std::endl;
 					return EcTrue;
 				}
+			}
+			if (fabs(m_actualJointPositions[i] - m_AssistiveStartJointPosition[i]) > AssistiveSafeStartJointMotion)
+			{
+				std::cout << "Assistive Start Error(Position), joint" << i + 1 << std::endl;
+				return EcTrue;
+			}
 
-				// position
-				if (fabs(m_actualJointPositions[i] - m_AssistiveStartJointPosition[i]) > AssistiveSafeStartJointMotion)
-				{
-					std::cout << "Assistive Start Error(Position), joint" << i + 1 << ": " << (m_actualJointPositions[i] - m_AssistiveStartJointPosition[i])
-						<< "time:" << m_currentAssistiveTime << std::endl;
-					return EcTrue;
-				}
-
-				//sensedTorque
-				if (fabs(m_SensedJointTorques[i] - m_AssistiveStartSensedTorques[i]) > 12 * m_CoulombFriction[i])
-				{
-					std::cout << "Assistive Start Error(sensedTorque), joint" << i + 1 << ": " << (m_SensedJointTorques[i] - m_AssistiveStartSensedTorques[i])
-						<< ",time:" << m_currentAssistiveTime << std::endl;
-					return EcTrue;
-				}
+			if (fabs(m_SensedJointTorques[i] - m_AssistiveStartSensedTorques[i]) > 30 * m_CoulombFriction[i] && fabs(m_SensedJointTorques[i] - m_AssistiveStartSensedTorques[i]) > 20)
+			{
+				std::cout << "Assistive Start Error(sensedTorque), joint" << i + 1 << std::endl;
+				return EcTrue;
 			}
 		}
 	}
@@ -1500,7 +1919,7 @@ EcBoolean CHansCollaborativeAlgorithm::checkSafeStartAssistiveMode
 	if (b_previousAssisteErrorState)
 	{
 		m_motionConstraintScale = 0.5;
-		if (m_currentAssistiveTime > 3.0)			// 3s后取消约束状态；
+		if (m_currentAssistiveTime > 3.0)			
 		{
 			b_previousAssisteErrorState = false;
 		}
@@ -1518,9 +1937,9 @@ void CHansCollaborativeAlgorithm::resetCobotStatus()
 {
 	if (!(m_AssistiveState == assistive_normal || m_AssistiveState == assistive_steadyStatus))
 	{
-		// TODO: 若前一个状态为异常状态，那在这个状态下，增加对速度的限制；
 		b_previousAssisteErrorState = true;
 	}
+	m_savedCollisionStopStatus.assign(m_NumJoints, EcFalse);
 	m_AssistiveState = assistive_normal;
 }
 
@@ -1530,10 +1949,9 @@ ENAssistiveState CHansCollaborativeAlgorithm::getAssistiveModeMotorCurrentComman
 	EcBooleanVector& jointCollisionStatus
 )
 {
-	motorCurrentCommands.resize(m_NumJoints);
+	motorCurrentCommands.assign(m_NumJoints, 0.0);
 
-	// 在开环电流控制模式下，这个碰撞的检测没有意义；
-	EcBoolean retVal = calculateDisturbanceTorques(
+	calculateDisturbanceTorques(
 		m_FilteredMotorCurrents,
 		m_FilteredJointPositions,
 		m_FilteredJointVelocities,
@@ -1543,55 +1961,39 @@ ENAssistiveState CHansCollaborativeAlgorithm::getAssistiveModeMotorCurrentComman
 		m_DisturbanceJointTorques
 	);
 
-	if (checkCloseDriveBackMode())				// 若在碰撞状态下，退出反向驱动的辅助函数；
+	if (checkCloseDriveBackMode())				
 	{
 		m_AssistiveState = assistive_steadyStatus;
 		return assistive_steadyStatus;
 	}
 
-
-	if (checkSafeStartAssistiveMode())			// 判断负载等参数是否正常；
+	if (checkSafeStartAssistiveMode())			
 	{
 		m_AssistiveState = assistive_errorRobotState;
 		return assistive_errorRobotState;
 	}
 
-	/*
-	if (fabs(m_currentAssistiveTime - 3.0) < 0.001)
-		setReadyToCloseAssistiveMode();
-	*/
-
 	if (checkCompleteReadyToCloseAssisitiveMode())
 	{
 		m_AssistiveState = assistive_finshedReadyToClose;
-		std::cout << "ready to close assistiveMode." << std::endl;
 		m_currentAssistiveTime = 0;
 		return assistive_finshedReadyToClose;
-		//return assistive_steadyStatus;
 	}
 
-	EcRealVector coulombFriction(m_NumJoints), viscousFriction(m_NumJoints);			// 静摩擦力计算
-	//retVal &= calculateCompensateCoulombFriction(m_FilteredJointVelocities, coulombFriction);
-	m_frictionModel.calculateCompensateFriction(m_actualJointPositions, m_FilteredJointVelocities, m_FilteredJointAccelerations, m_SensedJointTorques,
+	EcRealVector coulombFriction(m_NumJoints), viscousFriction(m_NumJoints);			
+	m_frictionModel.calculateCompensateFriction(m_actualJointPositions, m_FilteredActualJointVelocities, m_FilteredActualJointAcc, m_SensedJointTorques,
 		b_isDriveBackMode, coulombFriction, viscousFriction);
 
 
 	EcRealVector gravitationalTorques(m_NumJoints);
 	m_dynBase->calculateGravityJointTorques(m_FilteredJointPositions, m_DynamicsLinearParameters, gravitationalTorques);
 
-	retVal &= m_StateEstimator.filterDisturbanceTorques(m_DisturbanceJointTorques, m_DisturbanceJointTorques);
-	retVal &= updateCollisionStopStatus(m_AssistiveModeCollisionStopThresholds, m_DisturbanceJointTorques, jointCollisionStatus);
-
-	if (!retVal)
-	{
-		std::cout << "cobot: errorInitParams." << std::endl;
-		m_AssistiveState = assistive_errorInitParams;
-		return assistive_errorInitParams;
-	}
+	m_StateEstimator.filterDisturbanceTorques(m_DisturbanceJointTorques, m_DisturbanceJointTorques);
+	updateCollisionStopStatus(m_AssistiveModeCollisionStopThresholds, m_DisturbanceJointTorques, jointCollisionStatus);
+	jointCollisionStatus.assign(jointCollisionStatus.size(), EcFalse);
 
 
 	EcReal cartFrictionScale = 1.0;
-	// 加入对末端笛卡尔速度的限制；(已屏蔽)  
 	if (calculateCartesianVelocityScale(cartFrictionScale))
 	{
 		m_AssistiveState = assistive_overJointsRangeLimit;
@@ -1601,31 +2003,32 @@ ENAssistiveState CHansCollaborativeAlgorithm::getAssistiveModeMotorCurrentComman
 	for (EcU32 ii = 0; ii < m_NumJoints; ++ii)
 	{
 		const EcReal currentPosition = m_FilteredJointPositions[ii];
-		const EcReal currentVelocity = m_FilteredJointVelocities[ii];
+		const EcReal currentVelocity = m_FilteredActualJointVelocities[ii];
 
 		const EcReal jointSpeed = fabs(currentVelocity);
 		const EcReal viscousFrictionPercentage =
 			(jointSpeed < m_maxJointVelocitiesInAssistiveMode[ii])
 			? pow(fabs(m_maxJointVelocitiesInAssistiveMode[ii] - jointSpeed) / m_maxJointVelocitiesInAssistiveMode[ii], 0.1)
 			: 0.0;
-
-		//加入速度阻尼
+		
 		EcReal coulombDampCoeff = 1.0;
 		EcReal absVelRatio = jointSpeed / (m_maxJointVelocitiesInAssistiveMode[ii] * m_motionConstraintScale);
 
 		if (absVelRatio > 0.9 && absVelRatio <= 1.0)
 		{
-			coulombDampCoeff = 1 - absVelRatio;				// 线性约束
+			coulombDampCoeff = 1 - absVelRatio;				
 		}
 		else if (absVelRatio > 1.0)
 		{
-			coulombDampCoeff = -std::pow(6.0, 10 * absVelRatio - 10.0);		// 指数约束；
+			if (absVelRatio > 2)
+				absVelRatio = 2;
+			coulombDampCoeff = -std::pow(6.0, 10 * absVelRatio - 10.0);		
 		}
 
 		EcReal frictionCompensationTorque = 0.0;
 		frictionCompensationTorque = coulombDampCoeff * coulombFriction[ii] + viscousFrictionPercentage * viscousFriction[ii];
 
-		frictionCompensationTorque *= cartFrictionScale * m_constraintsFrictionCompensatoryFactor;			// 当速度超过250mm/s时，提供限制；
+		frictionCompensationTorque *= cartFrictionScale * m_constraintsFrictionCompensatoryFactor;			
 
 		const EcReal futurePosition = currentPosition + currentVelocity * m_timeStep;
 		EcReal jointLimitZoneFriction = 0;
@@ -1635,8 +2038,6 @@ ENAssistiveState CHansCollaborativeAlgorithm::getAssistiveModeMotorCurrentComman
 			futurePosition <= m_LowerJointLimits[ii] + m_stopBoundary[ii]
 			)
 		{
-			std::cout << "Error: closing to Joint Limit" << std::endl;
-			std::cout << "upperLimits =" << m_UpperJointLimits[ii] << "," << "lowerLimits =" << m_LowerJointLimits[ii] << std::endl;
 			jointCollisionStatus[ii] = EcTrue;
 			m_AssistiveState = assistive_overJointsRangeLimit;
 			return assistive_overJointsRangeLimit;
@@ -1655,14 +2056,13 @@ ENAssistiveState CHansCollaborativeAlgorithm::getAssistiveModeMotorCurrentComman
 				distanceToLimit = futurePosition - m_LowerJointLimits[ii];
 
 			const EcReal jointLimitViscousFrictionCoefficient = m_jointLimitAgainstForceEquivalent[ii] * pow((1.0 - fabs(distanceToLimit / m_slowDownBoundary[ii])), 4);
-			jointLimitZoneFriction = currentVelocity * jointLimitViscousFrictionCoefficient   // 在关节边界上提供反向力，同时减弱摩擦力的补偿；
+			jointLimitZoneFriction = currentVelocity * jointLimitViscousFrictionCoefficient   
 				+ pow((1.0 - fabs(distanceToLimit / m_slowDownBoundary[ii])), 0.7) * frictionCompensationTorque;
 
 		}
 
 		if (m_AdjustedTorqueConstants[ii] == 0)
 		{
-			std::cout << "Error: adjustedTorqueConstants = 0" << std::endl;
 			m_AssistiveState = assistive_errorInitParams;
 			return assistive_errorInitParams;
 		}
@@ -1670,38 +2070,46 @@ ENAssistiveState CHansCollaborativeAlgorithm::getAssistiveModeMotorCurrentComman
 		EcReal compensationTorque = jointLimitZoneFriction
 			- 1.0 * (frictionCompensationTorque + gravitationalTorques[ii]);
 
-		// 如果是反向驱动模式，在反向驱动阶段，所有关节都不补偿摩擦力；
 		if (b_isDriveBackMode) {
 			compensationTorque += 1.0 * frictionCompensationTorque;
 		}
 
-		if (m_driveBackStatus[ii] || b_isReadyToCloseMode)						//反向驱动
+		if (m_driveBackStatus[ii] || b_isReadyToCloseMode)						
 		{
-			compensationTorque += m_driveBackTorques[ii];// drive back torque; only in mode_ForceFree;
+			compensationTorque += m_driveBackTorques[ii];
 		}
 
+		EcReal driveBackRatio = 0.8;
+		if (b_isDriveBackAssistiveMode && m_driveBackStatusVector[ii]==status_strongDrive)
+			driveBackRatio = 0.8;
 
-		if (fabs(compensationTorque) > m_MaxActutorTorques[ii])
-			motorCurrentCommands[ii] = sign(compensationTorque) * m_MaxActutorCurrents[ii];	// max actuator torques
+		
+		if (fabs(compensationTorque) > m_MaxActutorTorques[ii] * driveBackRatio)
+			motorCurrentCommands[ii] = sign(compensationTorque) * m_MaxActutorCurrents[ii]* driveBackRatio;	
 		else
 			motorCurrentCommands[ii] = compensationTorque / m_AdjustedTorqueConstants[ii];
 
-		// 如果超过最大力矩（电流），就以最大电流为限；
-		//加入对最大允许电流的限制
-		if (std::fabs(motorCurrentCommands[ii]) > m_MaxActutorCurrents[ii] * 1.1)
-		{
-			std::cout << "Error: over current" << "(" << m_MaxActutorCurrents[ii] << ")" << std::endl;
-			std::cout << "Joint" << ii + 1 << ": " << motorCurrentCommands[ii] << std::endl;
 
+
+		if (std::fabs(motorCurrentCommands[ii]) > m_MaxActutorCurrents[ii] * 1.1* driveBackRatio)
+		{
 			motorCurrentCommands[ii] = sign(compensationTorque) * m_MaxActutorCurrents[ii];
 			jointCollisionStatus[ii] = EcTrue;
 			m_AssistiveState = assistive_overJointsCurrent;
 			return assistive_overJointsCurrent;
 		}
-		//if(ii==1 || jointCollisionStatus[ii])
-		//	std::cout << "cobot assistive:"<<ii<<"," << jointCollisionStatus[1] << "," << motorCurrentCommands[1] << "," << m_EstimatedJointTorques[1] << "," << m_DisturbanceJointTorques[1] << std::endl;;
 	}
 	m_AssistiveState = assistive_normal;
+
+	EcReal wholeCurrent = 0;
+	for (EcU32 ii = 0; ii < m_NumJoints; ++ii)
+		wholeCurrent += fabs(motorCurrentCommands[ii]);
+
+	EcReal currentRatio = wholeCurrent/ m_maxAllowControlBoxCurrent;
+	if (currentRatio > 1.0)
+		for (EcU32 ii = 0; ii < m_NumJoints; ++ii)
+			motorCurrentCommands[ii] = motorCurrentCommands[ii] * (1.0 / currentRatio) * 0.99;			
+
 	return assistive_normal;
 }
 
@@ -1714,9 +2122,9 @@ EcBoolean CHansCollaborativeAlgorithm::getGravityCompensationCurrentCommands
 	EcBoolean retVal = EcTrue;
 
 	EcRealVector gravitationalTorques(m_NumJoints);
-	motorCurrentCommands.resize(m_NumJoints);
+	motorCurrentCommands.assign(m_NumJoints, 0.0);
 
-	EcRealVector coulombFriction(6);
+	EcRealVector coulombFriction(m_NumJoints);
 	m_dynBase->calculateGravityJointTorques(m_FilteredJointPositions, m_DynamicsLinearParameters, gravitationalTorques);
 	retVal &= calculateCompensateCoulombFriction(m_FilteredJointVelocities, coulombFriction);
 	for (EcU32 ii = 0; ii < m_NumJoints; ++ii)
@@ -1728,15 +2136,8 @@ EcBoolean CHansCollaborativeAlgorithm::getGravityCompensationCurrentCommands
 		}
 		jointCollisionStatus[ii] = EcFalse;
 		EcReal friction = 0.;
-		if (b_isSensorlessAdmittanceMode) {
-			std::cout << "Sensorless admittance friction compensation" << std::endl;
+		friction = m_ViscousFrictionCoefficient[ii] * m_FilteredJointVelocities[ii];
 
-			friction = coulombFriction[ii];
-			b_isSensorlessAdmittanceMode = EcFalse;
-		}
-		else {
-			friction = m_ViscousFrictionCoefficient[ii] * m_FilteredJointVelocities[ii];
-		}
 		motorCurrentCommands[ii] = (gravitationalTorques[ii] + friction) / m_AdjustedTorqueConstants[ii];
 	}
 
@@ -1750,7 +2151,7 @@ void CHansCollaborativeAlgorithm::getComputeTorqueCurrentCommands
 )
 {
 	EcRealVector computeTorque(m_NumJoints);
-	motorCurrentCommands.resize(m_NumJoints);
+	motorCurrentCommands.assign(m_NumJoints, 0.0);
 
 
 	m_dynBase->calculateEstimateJointToqrues(m_FilteredCommandJointPositions,
@@ -1759,19 +2160,13 @@ void CHansCollaborativeAlgorithm::getComputeTorqueCurrentCommands
 		m_DynamicsLinearParameters,
 		computeTorque);
 
-	//std::cout << "m_FilteredCommandVelocity:  ";
 	for (EcU32 i = 0; i < m_NumJoints; i++)
 	{
-		//std::cout << m_FilteredCommandJointVelocities[i] << ",";
-		//computeTorque[i] *= computeTorque[i] - m_FilteredCommandJointVelocities[i] * m_CoulombFriction[i];
 		computeTorque[i] *= compensateRatio;
 	}
-	//std::cout << std::endl;
 
-	//std::cout << "computTorque: ";
 	for (EcU32 ii = 0; ii < m_NumJoints; ++ii)
 	{
-		//std::cout << computeTorque[ii] << ",";
 		if (m_AdjustedTorqueConstants[ii] == 0)
 		{
 			continue;
@@ -1779,8 +2174,6 @@ void CHansCollaborativeAlgorithm::getComputeTorqueCurrentCommands
 		EcReal viscousFriction = 0.;
 		motorCurrentCommands[ii] = (computeTorque[ii] + viscousFriction) / m_AdjustedTorqueConstants[ii];
 	}
-
-	//std::cout << std::endl;
 }
 
 void CHansCollaborativeAlgorithm::getComputeTorqueCurrentCommands
@@ -1793,11 +2186,10 @@ void CHansCollaborativeAlgorithm::getComputeTorqueCurrentCommands
 )
 {
 	EcRealVector computeTorque(m_NumJoints);
-	motorCurrentCommands.resize(m_NumJoints);
+	motorCurrentCommands.assign(m_NumJoints, 0.0);
 
-	EcRealVector dynLinearParams = m_DynamicsLinearParameters;
+	m_compenasteDynParams = m_DynamicsLinearParameters;
 
-	// 避免设置负载时，前馈电流出现阶跃，导致位置发生运动
 	if (b_newPayLoadStatus)
 	{
 		EcReal mass = m_prePayloadMass + (m_payloadMass - m_prePayloadMass) * m_payloadCount / 50.0;
@@ -1807,14 +2199,11 @@ void CHansCollaborativeAlgorithm::getComputeTorqueCurrentCommands
 		y = m_centerofMass[1];
 		z = m_centerofMass[2];
 
-		EcReal length = sqrt(x * x + y * y + z * z);
-
-		Ixx = 0;	Iyy = 0;	Izz = 0;	Ixy = 0;	Ixz = 0;	Iyz = 0;
 		lx = mass * x;	ly = mass * y;	lz = mass * z;
-		EcRealVector payloadPara = { Ixx, Ixy, Ixz, Iyy, Iyz, Izz, lx, ly, lz, mass };
+		EcRealVector payloadPara = { 0, 0, 0, 0, 0, 0, lx, ly, lz, mass };
 		for (EcU32 ii = 0; ii < 10; ii++)
 		{
-			dynLinearParams[13 * (m_NumJoints - 1) + ii] = m_DynamicsParameters[13 * (m_NumJoints - 1) + ii] + payloadPara[ii];
+			m_compenasteDynParams[13 * (m_NumJoints - 1) + ii] = m_DynamicsParameters[13 * (m_NumJoints - 1) + ii] + payloadPara[ii];
 		}
 
 		if (m_payloadCount >= 50)
@@ -1822,21 +2211,59 @@ void CHansCollaborativeAlgorithm::getComputeTorqueCurrentCommands
 
 	}
 
-	m_dynBase->calculateEstimateJointToqrues(jointPosition,
-		jointVelocity,
-		jointAcceleration,
-		dynLinearParams,
-		computeTorque);
+	EcRealVector jointAcc = jointAcceleration;
+
+	if (m_NumJoints >= 6 && m_AssistiveModeCollisionStopThresholds[m_NumJoints-1] != 200)
+	{
+		jointAcc = m_FilteredCommandJointAccelerations;
+
+		m_dynBase->calculateEstimateJointToqrues(jointPosition, jointVelocity, jointAcc, m_compenasteDynParams, computeTorque);
+		EcRealVector noAccTorque(m_NumJoints);
+		m_dynBase->calculateEstimateJointToqrues(jointPosition,	jointVelocity,m_zeroVector, m_compenasteDynParams,noAccTorque);
+
+		for (int i = 0; i < m_NumJoints; i++)
+		{
+			computeTorque[i] = computeTorque[i] + (computeTorque[i] - noAccTorque[i]) * (m_feedForwardAccTorqueRatio[i] - 1.0);		
+			m_FeedAccTorque[i] = (computeTorque[i] - noAccTorque[i]) * m_feedForwardAccTorqueRatio[i];		
+		}
+
+	}
+	else
+	{
+		for(int i=0;i<m_NumJoints;i++)
+			if (fabs(jointVelocity[i]) < 0.018)
+				jointAcc[i] = 0;		
+		
+		m_dynBase->calculateEstimateJointToqrues(jointPosition,
+			jointVelocity,
+			jointAcc,
+			m_compenasteDynParams,
+			computeTorque);
+
+	}
 
 	for (EcU32 ii = 0; ii < m_NumJoints; ++ii)
 	{
 		if (m_AdjustedTorqueConstants[ii] == 0)
 		{
-			std::cout << "torque constants == 0" << std::endl;
 			continue;
 		}
+		computeTorque[ii] += m_jointTorqueFromEEForce[ii];
 		motorCurrentCommands[ii] = (computeTorque[ii]) / m_AdjustedTorqueConstants[ii];
+
+		if (fabs(motorCurrentCommands[ii] - m_previousFeedforwardCurrent[ii]) > 0.8)
+		{
+			motorCurrentCommands[ii] = m_previousFeedforwardCurrent[ii] + sign(motorCurrentCommands[ii] - m_previousFeedforwardCurrent[ii]) * 0.8;
+		}
+
+		if (fabs(motorCurrentCommands[ii]) > m_MaxActutorCurrents[ii])
+		{
+			motorCurrentCommands[ii] = sign(motorCurrentCommands[ii]) * m_MaxActutorCurrents[ii];
+		}
 	}
+
+	m_previousFeedforwardCurrent = motorCurrentCommands;
+	m_previousJointVelocity = jointVelocity;
 }
 
 void CHansCollaborativeAlgorithm::getGravityTorqueCurrentCommands
@@ -1845,10 +2272,8 @@ void CHansCollaborativeAlgorithm::getGravityTorqueCurrentCommands
 	EcRealVector& motorCurrentCommands
 )
 {
-	EcBoolean retVal = EcTrue;
-
 	EcRealVector gravitationalTorques(m_NumJoints);
-	motorCurrentCommands.resize(m_NumJoints);
+	motorCurrentCommands.assign(m_NumJoints, 0.0);
 
 	m_dynBase->calculateGravityJointTorques(m_FilteredCommandJointPositions, m_DynamicsLinearParameters, gravitationalTorques);
 
@@ -1857,7 +2282,6 @@ void CHansCollaborativeAlgorithm::getGravityTorqueCurrentCommands
 	{
 		if (m_AdjustedTorqueConstants[ii] == 0)
 		{
-			retVal = EcFalse;
 			continue;
 		}
 		EcReal viscousFriction = m_ViscousFrictionCoefficient[ii] * m_FilteredCommandJointVelocities[ii];
@@ -1873,23 +2297,62 @@ void CHansCollaborativeAlgorithm::getGravityTorqueCurrentCommands
 	EcRealVector& motorCurrentCommands
 )
 {
-	EcBoolean retVal = EcTrue;
-
 	EcRealVector gravitationalTorques(m_NumJoints);
-	motorCurrentCommands.resize(m_NumJoints);
+	motorCurrentCommands.assign(m_NumJoints, 0.0);
 	m_dynBase->calculateGravityJointTorques(jointPosition, m_DynamicsLinearParameters, gravitationalTorques);
 
 	for (EcU32 ii = 0; ii < m_NumJoints; ++ii)
 	{
 		if (m_AdjustedTorqueConstants[ii] == 0)
 		{
-			retVal = EcFalse;
 			continue;
 		}
 		EcReal viscousFriction = m_ViscousFrictionCoefficient[ii] * m_FilteredCommandJointVelocities[ii];
 		motorCurrentCommands[ii] = compensateRatio * (gravitationalTorques[ii] + viscousFriction) / m_AdjustedTorqueConstants[ii];
 	}
 
+}
+
+void CHansCollaborativeAlgorithm::getFlexibleCompensateGravityTorque
+(
+	const EcRealVector& jointPosition,
+	EcRealVector& gravTorque
+)
+{
+	gravTorque = m_EstimatedGravityTorques;
+}
+
+void CHansCollaborativeAlgorithm::getGravityAndCoriolisCentrifugalTorque
+(
+	const EcRealVector& jointPosition,
+	const EcRealVector& jointVelocity,
+	EcRealVector& torque
+)
+{
+	EcRealVector jointAcc(m_NumJoints, 0.0);
+	m_dynBase->calculateEstimateJointToqrues(jointPosition, jointVelocity, jointAcc, m_compenasteDynParams, torque);
+	for (int i = 0;i < m_NumJoints;i++)
+	{
+		torque[i] -= m_CoulombFriction[i] * dynamicsBase::sign(jointVelocity[i]) + m_ViscousFrictionCoefficient[i] * jointVelocity[i];
+	}
+
+}
+
+void CHansCollaborativeAlgorithm::getJointInertia
+(
+	const EcRealVector& jointPosition,
+	EcRealVector& inertia
+) {
+	EcRealVector jointAcc(m_NumJoints, 0.0),jointVel(m_NumJoints,0.0);
+	EcRealVector gravitationalTorques(m_NumJoints),tau(m_NumJoints);
+	m_dynBase->calculateGravityJointTorques(jointPosition, m_DynamicsLinearParameters, gravitationalTorques);
+	for (int i = 0; i < m_NumJoints; i++)
+	{
+		jointAcc.assign(m_NumJoints, 0);
+		jointAcc[i] = 1;
+		m_dynBase->calculateEstimateJointToqrues(jointPosition, jointVel, jointAcc, m_DynamicsLinearParameters, tau);
+		inertia[i] = tau[i] - gravitationalTorques[i];
+	}
 }
 
 void CHansCollaborativeAlgorithm::setMaxJointVelocity
@@ -1902,7 +2365,6 @@ void CHansCollaborativeAlgorithm::setMaxJointVelocity
 	{
 		m_maxJointVeloctiy[ii] = maxJointVelocity[ii];
 	}
-	std::cout << "(cobot)max joint velociy: " << m_maxJointVeloctiy[0] << "," << m_maxJointVeloctiy[1] << "," << m_maxJointVeloctiy[2] << "," << m_maxJointVeloctiy[3] << "," << m_maxJointVeloctiy[4] << "," << m_maxJointVeloctiy[5] << std::endl;
 }
 
 void CHansCollaborativeAlgorithm::setMaxJointAccelerations
@@ -1930,76 +2392,47 @@ void CHansCollaborativeAlgorithm::setLowVelocityThreshold
 		}
 		else
 		{
-			m_lowVelocityThresholds[ii] = fabs(velocityThreshold[ii]);
+			if (fabs(velocityThreshold[ii] - 0.00436332) > 0.000001)
+			{
+				m_lowVelocityThresholds[ii] = 0.00436332;
+				m_feedForwardAccTorqueRatio[ii] = velocityThreshold[ii]*rad2deg;
+				m_AssistiveModeCollisionStopThresholds[m_NumJoints - 1] = 199;
+			}
+			else
+			{
+				m_lowVelocityThresholds[ii] = fabs(velocityThreshold[ii]);
+				m_feedForwardAccTorqueRatio[ii] = 1.0;
+
+			}
 		}
 	}
-	std::cout << "Low Vel Threshold:" << velocityThreshold[0] << "," << velocityThreshold[1] << "," << velocityThreshold[2] << "," << velocityThreshold[3] << "," <<
-		velocityThreshold[4] << "," << velocityThreshold[5] << std::endl;
 }
 
 void CHansCollaborativeAlgorithm::setVibrationPeriod()
 {
-	m_vibrationPeriod[0] = 2 * 3.1415926 * 6;
-	m_vibrationPeriod[1] = 2 * 3.1415926 * 5;
-	m_vibrationPeriod[2] = 2 * 3.1415926 * 5.6;
-	m_vibrationPeriod[3] = 2 * 3.1415926 * 7;
-	m_vibrationPeriod[4] = 2 * 3.1415926 * 7.5;
-	m_vibrationPeriod[5] = 2 * 3.1415926 * 8;
-	m_vibrationPeriod[6] = 2 * 3.1415926 * 6.5;
+	m_vibrationPeriod.assign(m_NumJoints, 0.0);
+	if (m_NumJoints > 0) m_vibrationPeriod[0] = 2 * 3.1415926 * 6;
+	if (m_NumJoints > 1) m_vibrationPeriod[1] = 2 * 3.1415926 * 5;
+	if (m_NumJoints > 2) m_vibrationPeriod[2] = 2 * 3.1415926 * 5.6;
+	if (m_NumJoints > 3) m_vibrationPeriod[3] = 2 * 3.1415926 * 7;
+	if (m_NumJoints > 4) m_vibrationPeriod[4] = 2 * 3.1415926 * 7.5;
+	if (m_NumJoints > 5) m_vibrationPeriod[5] = 2 * 3.1415926 * 8;
+	if (m_NumJoints > 6) m_vibrationPeriod[6] = 2 * 3.1415926 * 6.5;
 }
 
-
-
-/*
-// 选择开放哪个自由度，对于无力传感器的方案，将其转换为位置/姿态；
-void CHansCollaborativeAlgorithm::selectAdmittanceControlFreedom
-(
-const EcBooleanVector selectedFreedom
-)
-{
-	if (selectedFreedom[0])
-	{
-		m_sensorlessAdmitControl->setOrientationAdmittance(!selectedFreedom[0]);
-	}
-	else{
-		m_sensorlessAdmitControl->setOrientationAdmittance(selectedFreedom[0]);
-	}
-}
-
-void CHansCollaborativeAlgorithm::setAdmitValidWrenchThreshold
-(
-const EcReal validForce,
-const EcReal validTorque
-)
-{
-	m_sensorlessAdmitControl->setValidWrenchThreshold(validForce, validTorque);
-}
-
-// 计算当前周期中最占优的末端力/矩；
-void CHansCollaborativeAlgorithm::calculateSensorlessEndEffectorForces
-(
-EcRealVector& calcEEForces
-)
-{
-	b_isSensorlessAdmittanceMode = EcTrue;
-	EcRealVector eeOutputForces(6);
-	EcBoolean ret = calculateEeOutputForces(m_FilteredJointPositions, m_DisturbanceJointTorques, eeOutputForces);
-	m_sensorlessAdmitControl->votingSystem(eeOutputForces, calcEEForces);
-	for (EcSizeT i = 0; i < calcEEForces.size(); i++)
-	{
-		calcEEForces[i] = -calcEEForces[i];
-	}
-	std::cout <<"calculate EE forces:" << calcEEForces[0] << "," << calcEEForces[1] << "," << calcEEForces[2] << std::endl;
-}
-*/
 
 EcBoolean CHansCollaborativeAlgorithm::calculateMaxRectifyEstimateJointTorques
 (
 )
 {
-	EcRealVector q = { 0, 1.57, 0, 0, 0, 0 };
-	EcRealVector dq = { 0, -0.1, 0, 0, 0, 0 };
-	EcRealVector ddq = { 0, -m_maxJointAccelerations[1], 0, 0, m_maxJointAccelerations[4], 0 };
+	EcRealVector q(m_NumJoints, 0.0);
+	if (m_NumJoints >= 2) q[1] = 1.57;
+	EcRealVector dq(m_NumJoints, 0.0);
+	if (m_NumJoints >= 2) dq[1] = -0.1;
+	EcRealVector ddq(m_NumJoints, 0.0);
+	if (m_NumJoints >= 2) ddq[1] = -m_maxJointAccelerations[1];
+	if (m_NumJoints >= 5) ddq[m_NumJoints - 2] = m_maxJointAccelerations[m_NumJoints - 2];
+
 	EcReal gx = m_gx;
 	EcReal gy = m_gy;
 	EcReal gz = m_gz;
@@ -2007,13 +2440,15 @@ EcBoolean CHansCollaborativeAlgorithm::calculateMaxRectifyEstimateJointTorques
 	m_gy = 0;
 	m_gz = -9.81;
 
-	EcBoolean ret = m_dynBase->calculateEstimateJointToqrues(q, dq, ddq, m_DynamicsLinearParameters, m_maxJointTorques);		// be used to calculate drive back torque
-	m_maxJointTorques[0] = fabs(m_maxJointTorques[1]);	// joint2
+	EcBoolean ret = m_dynBase->calculateEstimateJointToqrues(q, dq, ddq, m_DynamicsLinearParameters, m_maxJointTorques);		
+	m_maxJointTorques[0] = fabs(m_maxJointTorques[1]);	
 	m_maxJointTorques[1] = fabs(m_maxJointTorques[1]);
-	m_maxJointTorques[2] = fabs(m_maxJointTorques[2]);	// joint3
-	m_maxJointTorques[3] = fabs(m_maxJointTorques[2]);
-	m_maxJointTorques[4] = fabs(m_maxJointTorques[4]);	// joint5
-	m_maxJointTorques[5] = fabs(m_maxJointTorques[4]);
+	m_maxJointTorques[2] = fabs(m_maxJointTorques[2]);	
+	if (m_NumJoints > 3) m_maxJointTorques[3] = fabs(m_maxJointTorques[2]);
+	if (m_NumJoints >= 6) {
+		m_maxJointTorques[m_NumJoints - 2] = fabs(m_maxJointTorques[m_NumJoints - 2]);	
+		m_maxJointTorques[m_NumJoints - 1] = fabs(m_maxJointTorques[m_NumJoints - 2]);
+	}
 
 
 	m_gx = gx;
@@ -2046,7 +2481,6 @@ void CHansCollaborativeAlgorithm::saturationFunction(EcReal& value, EcSizeT inde
 
 void CHansCollaborativeAlgorithm::calculateCoulombFriction(const EcRealVector& jointPosition, EcRealVector& friction)
 {
-	// 更新 alpha, 改变滞后参数
 	for (EcSizeT i = 0; i < m_NumJoints; i++)
 	{
 		if (fabs(jointPosition[i] - m_jointMPosition[i]) > m_velThreshold)
@@ -2069,27 +2503,8 @@ void CHansCollaborativeAlgorithm::calculateCoulombFriction(const EcRealVector& j
 
 EcBoolean CHansCollaborativeAlgorithm::calculateCartesianVelocityScale(EcReal& cartScale)
 {
-	// 正常出货的屏蔽这个功能 
 	cartScale = 1.0;
 	return false;
-
-
-	EcRealVector eeVelocity(6);
-	//m_hmAlgorithm.calculateTCPVelocity(m_FilteredJointPositions, m_FilteredJointVelocities, eeVelocity);
-	EcReal vel = KDL::sqrt(eeVelocity[0] * eeVelocity[0] + eeVelocity[1] * eeVelocity[1] + eeVelocity[2] * eeVelocity[2]);
-	if (vel < 0.225)
-	{
-		cartScale = 1.0;
-	}
-	else {
-		cartScale = (vel < 0.25)
-			? pow(fabs(0.25 - vel) / 0.25, 0.5)
-			: 0.0;
-		if (vel > 0.25)
-			return EcTrue;
-	}
-
-	return EcFalse;
 }
 
 void CHansCollaborativeAlgorithm::setMaxPowerAndMomentumConstraints
@@ -2109,38 +2524,33 @@ void CHansCollaborativeAlgorithm::setMaxPowerAndMomentumConstraints
 	m_maxJointPowers = maxJointPowers;
 	m_maxConstraintPower = maxPower * 0.95;
 	m_maxConstraintMomentum = maxMomentum * 0.95;
-	std::cout << "power and momentum constraints:" << maxPower << "," << maxMomentum << std::endl;
-	std::cout << "joint power constraints:" << maxJointPowers[0] << "," << maxJointPowers[1] << "," << maxJointPowers[2] << "," << maxJointPowers[3] << "," << maxJointPowers[4] << "," << maxJointPowers[5] << std::endl;
 }
 
 bool CHansCollaborativeAlgorithm::calculatePowerAndMomentum(
 	const EcRealVector& jointVoltages,
-	EcReal& electircPower, // P = U * I;
-	EcReal& physicsPower,  // P = Torque * omega;
-	EcReal& momentum,	   // momemtum = mass * omega;
-	EcRealVector& jointPowers
+	EcReal& electircPower, 
+	EcReal& physicsPower,  
+	EcReal& momentum,	   
+	EcRealVector& jointPowers,
+	EcBoolean isUsingCommandVel
 )
 {
-	EcRealVector jointMomentum;
-	EcRealVector jointPhysicsPower(6), jointSpeedRatio(6), jointPowerRatio(6), jointMomentumRatio(6);
-	m_momentumObserver->getJointGeneralizeMomentum(jointMomentum);
+	EcRealVector jointMomentum(m_NumJoints);
+	if(isUsingCommandVel)
+		m_momentumObserver->calculateGeneralizeMomentum(m_FilteredJointPositions, m_FilteredJointVelocities, jointMomentum);
+	else
+		m_momentumObserver->calculateGeneralizeMomentum(m_FilteredJointPositions, m_FilteredActualJointVelocities, jointMomentum);
+
 	momentum = 0.0;
 	physicsPower = 0.0;
 	electircPower = 0.0;
 
-	for (int i = 0; i < 6; i++)
+	for (int i = 0; i < m_NumJoints; i++)
 	{
 		momentum += jointMomentum[i];
-		//jointPhysicsPower[i] = m_SensedJointTorques[i] * m_FilteredJointVelocities[i];
-
-		// 在这里，将摩擦力的影响去掉，不属于对外部的输出力矩；
-		jointPhysicsPower[i] = (m_SensedJointTorques[i] - (m_FilteredJointVelocities[i] * m_ViscousFrictionCoefficient[i] + sign(m_FilteredJointVelocities[i]) * m_CoulombFriction[i])) * m_FilteredJointVelocities[i];
-
-
-		physicsPower += jointPhysicsPower[i];
-		//electircPower += jointVoltages[i] * m_FilteredMotorCurrents[i];
+		jointPowers[i] = (m_SensedJointTorques[i] - (m_FilteredActualJointVelocities[i] * m_ViscousFrictionCoefficient[i] + sign(m_FilteredActualJointVelocities[i]) * m_CoulombFriction[i])) * m_FilteredActualJointVelocities[i];
+		physicsPower += jointPowers[i];
 	}
-	jointPowers = jointPhysicsPower;
 	return true;
 }
 
@@ -2150,12 +2560,12 @@ bool CHansCollaborativeAlgorithm::calculatePowerAndMomentumConstraints
 (
 	const EcReal userDefineOverride,
 	const EcRealVector& jointVoltages,
-	EcBoolean& constraintActive,						// need to re-plan the motion at rising edge;
-	EcReal& velFactorConstraint,					// constraint factor for joint velocities;
-	EcReal& accFactorConstraint,					// constraint factor for joint accelerations;
-	EcReal& electircPower,						// P = U * I;
-	EcReal& physicsPower,							// P = Torque * omega;
-	EcReal& momentum								// momemtum = mass * omega;
+	EcBoolean& constraintActive,						
+	EcReal& velFactorConstraint,					
+	EcReal& accFactorConstraint,					
+	EcReal& electircPower,						
+	EcReal& physicsPower,							
+	EcReal& momentum								
 )
 {
 	accFactorConstraint = 1.0;
@@ -2165,7 +2575,7 @@ bool CHansCollaborativeAlgorithm::calculatePowerAndMomentumConstraints
 	if (userDefineOverride < 0.0001)
 		return false;
 
-	EcRealVector jointPowers(6);
+	EcRealVector jointPowers(m_NumJoints);
 	m_jointVoltages = jointVoltages;
 	calculatePowerAndMomentum(jointVoltages, electircPower, physicsPower, momentum, jointPowers);
 	m_momentumObserver->calculateMomentum(m_FilteredJointPositions,m_FilteredCommandJointVelocities,momentum);
@@ -2180,13 +2590,12 @@ bool CHansCollaborativeAlgorithm::calculatePowerAndMomentumConstraints
 		constraintActive = true;
 	}
 	else if ((physicsPower > 0.90 * m_maxConstraintPower || momentum > 0.90 * m_maxConstraintMomentum) && b_constraintPowerStatus)
-	{   // hysteresis
+	{   
 		velFactorConstraint = m_velFactorConstraint;
 		constraintActive = true;
 	}
 
-	// 关节的功率约束
-	for (int i = 0; i < 6; i++)
+	for (int i = 0; i < m_NumJoints; i++)
 	{
 		if (jointPowers[i] > m_maxJointPowers[i])
 		{
@@ -2195,14 +2604,12 @@ bool CHansCollaborativeAlgorithm::calculatePowerAndMomentumConstraints
 	}
 
 
-	// avoid fluctuation when robot in constraint status;
 	if (b_constraintPowerStatus && m_velFactorConstraint < velFactorConstraint)
 	{
 		velFactorConstraint = m_velFactorConstraint - 0.01;
 	}
 
 
-	// low filter
 	if (!constraintActive)
 	{
 		velFactorConstraint = (velFactorConstraint * m_updateTimePeriod + m_velFactorConstraint * 0.2) / (m_updateTimePeriod + 0.2);
@@ -2216,37 +2623,17 @@ bool CHansCollaborativeAlgorithm::calculatePowerAndMomentumConstraints
 	m_velFactorConstraint = velFactorConstraint;
 	b_constraintPowerStatus = constraintActive;
 
-
-
-	/*
-		// add mean filter, because the setOverride func of codesys need smooth;
-		m_meanFilteredVelConstraint.push_front(velFactorConstraint);
-		EcReal tempSum = 0.0;
-		for(EcSizeT i =0; i<NUMofMeanVelFactorConst;i++)
-		{
-			tempSum+=m_meanFilteredVelConstraint[i];
-		}
-		velFactorConstraint = tempSum/NUMofMeanVelFactorConst;
-
-
-		// low freq to change velConstraint;
-		if((int(m_currentTime/m_updateTimePeriod)%20 == 0))
-		{
-			m_preVelFactorConstraint = velFactorConstraint;
-		}
-		velFactorConstraint = m_preVelFactorConstraint;
-	*/
-
 	return true;
 }
 
 ENMotionConstraintStatus CHansCollaborativeAlgorithm::monitorMotionConstraintsStatus(
 	EcBoolean isAssistiveMode)
 {
+	if (m_currentTime < 0.1)
+		return constraint_normal;
 
-	// add:运动状态的约束
 	EcReal momentum, physicalPower, electricPower;
-	EcRealVector jointPowers(6);
+	EcRealVector jointPowers(m_NumJoints);
 	calculatePowerAndMomentum(m_jointVoltages, electricPower, physicalPower, momentum, jointPowers);
 
 
@@ -2255,11 +2642,10 @@ ENMotionConstraintStatus CHansCollaborativeAlgorithm::monitorMotionConstraintsSt
 		if (!(m_AssistiveState == assistive_normal || m_AssistiveState == assistive_steadyStatus || m_AssistiveState == assistive_finshedReadyToClose))
 		{
 			if (m_AssistiveState == assistive_steadyStatus)
-			{	// 如果过一个实时周期没有处理碰撞反弹后零力示教回复正常的信号，则将零力示教状态切换为严重碰撞类型，让控制器报错；
+			{	
 				m_AssistiveState = assistive_severCollision;
 				return constraint_normal;
 			}
-			std::cout << "constraint_errorStatus." << std::endl;
 			return constraint_errorStatus;
 		}
 
@@ -2269,29 +2655,25 @@ ENMotionConstraintStatus CHansCollaborativeAlgorithm::monitorMotionConstraintsSt
 			if (b_isDriveBackMode)
 				tempVel = m_maxJointVeloctiy[ii];
 			else
-				tempVel = m_maxJointVelocitiesInAssistiveMode[ii];
+				tempVel = m_maxJointVelocitiesInAssistiveModeForErr[ii];
 
-			if (fabs(m_FilteredJointVelocities[ii]) > tempVel * 1.25)
+			if (fabs(m_FilteredActualJointVelocities[ii]) > tempVel * 1.25)
 			{
-				std::cout << "safe thread(assistiveMode, over speed limit): index, currentVel, maxVel" << ii + 1 << "," << m_FilteredJointVelocities[ii] << "," << m_maxJointVelocitiesInAssistiveMode[ii] << std::endl;
 				return constraint_overJointVelocitiesLimit;
 			}
 		}
 		if (fabs(momentum) > MaxAllowMomentumInAssistiveMode * 5 && !b_isDriveBackMode)
 		{
-			std::cout << "safe thread(assistiveMode, over momentum limit):current,maxAllow " << momentum << "," << MaxAllowMomentumInAssistiveMode << std::endl;
 			return constraint_overMomentumLimit;
 		}
 
 
 		if (physicalPower > MaxAllowPowerInAssistiveMode * 5 && !b_isDriveBackMode)
 		{
-			std::cout << "safe thread(assistiveMode, over power limit):physical,maxAllow " << physicalPower << "," << MaxAllowPowerInAssistiveMode << std::endl;
 			return constraint_overPowerLImit;
 		}
 
 		m_constraintsFrictionCompensatoryFactor = 1.0;
-		// 如果超过阈值75%，则开始降低摩擦力的补偿比例；
 		if (fabs(momentum) > MaxAllowMomentumInAssistiveMode * 0.75 && !b_isDriveBackMode)
 		{
 			m_constraintsFrictionCompensatoryFactor = 3.1 - 3.0 * fabs(momentum) / MaxAllowMomentumInAssistiveMode;
@@ -2308,24 +2690,22 @@ ENMotionConstraintStatus CHansCollaborativeAlgorithm::monitorMotionConstraintsSt
 	{
 		for (EcSizeT ii = 0; ii < m_NumJoints; ii++)
 		{
-			if (fabs(m_FilteredJointVelocities[ii]) > m_maxJointVeloctiy[ii] * 1.25)
+			if (fabs(m_FilteredActualJointVelocities[ii]) > m_maxJointVeloctiy[ii] * 1.25)
 			{
-				std::cout << "safe thread(positionMode,over speed limit):index, current, max " << ii + 1 << "," << m_FilteredJointVelocities[ii] << "," << m_maxJointVeloctiy[ii] << std::endl;
+				b_logFlag = false;
 				return constraint_overJointVelocitiesLimit;
 			}
 
 		}
 
-		if (fabs(momentum) > (m_maxConstraintMomentum + m_payloadMass) * 6)
+		if (fabs(momentum) > (m_maxConstraintMomentum) * 6)
 		{
-			std::cout << "safe thread(positionMode, over momentum limit):velRatio,current,maxAllow " << m_velFactorConstraint << "," << momentum << "," << m_maxConstraintMomentum << std::endl;
 			return constraint_overMomentumLimit;
 		}
 
 
 		if (physicalPower > m_maxConstraintPower * 6)
 		{
-			std::cout << "safe thread(positionMode, over power limit):electric,physical,maxAllow " << electricPower << "," << physicalPower << "," << m_maxConstraintPower << std::endl;
 			return constraint_overPowerLImit;
 		}
 
@@ -2342,32 +2722,35 @@ void CHansCollaborativeAlgorithm::getSettingParameters(
 	EcRealVector& gearRatio,
 	EcRealVector& maxEfficiency,
 	EcRealVector& maxActuatorCurrents,
-	EcReal& rotationofMounting, /* rotate robot base mounting angles(deg) */
-	EcReal& tiltofMounting,		/* tilt robot base mounting angles(deg) */
+	EcReal& rotationofMounting, 
+	EcReal& tiltofMounting,		
 	EcRealVector& upperJointLimits,
 	EcRealVector& lowerJointLimits,
 	EcRealVector& dynamicsParams,
-	EcRealVector& collisionStopThresholds,			 /* joint collisiton threshold, */
-	EcRealVector& collisionStopInMomentumThresholds, /* joint collisiton threshold, */
+	EcRealVector& collisionStopThresholds,			 
+	EcRealVector& collisionStopInMomentumThresholds, 
 	EcRealVector& assistiveModeCollisionStopThresholds,
-	EcRealVector& frictionCompensatoryFactor,	/* default setting: J1="0.5" J2="0.5" J3="0.4" J4="0.6" J5="0.7" J6="0.7" */
-	EcRealVector& frictionCompensatoryFactorII, /* default seting [1.0], */
-	EcRealVector& lowVelocityThreshold,			/* decide whether the joints are in low velocity status, */
+	EcRealVector& frictionCompensatoryFactor,	
+	EcRealVector& frictionCompensatoryFactorII, 
+	EcRealVector& lowVelocityThreshold,			
 	EcRealVector& maxJointVelocity,
-	EcReal& maxPowerConstraint,		/* power */
-	EcReal& maxMomentumConstraint,	/* momentum */
-	EcReal& distanceLimitInDriveBack, /* allowing joint motion(degree,  °) in drive back mode, */
-	EcReal& timeDurationInDriveBack,	/* allowing time duration(second, s) in drive back mode, */
+	EcReal& maxPowerConstraint,		
+	EcReal& maxMomentumConstraint,	
+	EcReal& distanceLimitInDriveBack, 
+	EcReal& timeDurationInDriveBack,	
 	EcReal& mass,
-	EcRealVector& centerofMass, /* (millimeter) */
+	EcRealVector& centerofMass, 
 	bool& isAssistiveMode,
 	int& drivebackMode,
-	EcReal& assistiveCheckTime /* the start time for check robot status in assistive mode, second ,s; */
+	EcReal& assistiveCheckTime 
 )
 {
-	kinParams = m_kinParams;
-	for (int i = 0; i < kinParams.size(); i++)
-		kinParams[i] *= 1000.0;
+	if (m_kinParams.size() > 0)
+	{
+		kinParams = m_kinParams;
+		for (int i = 0; i < kinParams.size(); i++)
+			kinParams[i] *= 1000.0;
+	}
 	actuatorDamp = m_dampSetting;
 	torqueConstant = m_torqueConstant;
 	gearRatio = m_gearRatio;
@@ -2381,14 +2764,13 @@ void CHansCollaborativeAlgorithm::getSettingParameters(
 	maxJointVelocity = m_maxJointVeloctiy;
 	lowVelocityThreshold = m_lowVelocityThresholds;
 
-	for (int i = 0; i < numofJoints; i++)
+	for (int i = 0; i < upperJointLimits.size(); i++)
 	{
 		upperJointLimits[i] *= KDL::rad2deg;
 		lowerJointLimits[i] *= KDL::rad2deg;
 		maxJointVelocity[i] *= KDL::rad2deg;
 		lowVelocityThreshold[i] *= KDL::rad2deg;
 	}
-
 
 	dynamicsParams = m_DynamicsParameters;
 	collisionStopThresholds = m_CollisionStopThresholds;
@@ -2404,6 +2786,7 @@ void CHansCollaborativeAlgorithm::getSettingParameters(
 
 	mass = m_payloadMass;
 	centerofMass = m_centerofMass;
+
 	centerofMass = { centerofMass[0] * 1000.0,centerofMass[1] * 1000.0,centerofMass[2] * 1000.0 };
 	isAssistiveMode = !b_isDriveBackAssistiveMode;
 	drivebackMode = m_drivebackMode;

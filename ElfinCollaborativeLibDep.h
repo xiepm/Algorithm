@@ -3,17 +3,17 @@
  * This is a generated file. Do not modify it's contents directly
  ***********************************************************************/
 
-/**
- *  <name>Component Template</name>
- *  <description> 
- *  An example on how to implement a component.
- *  This component does no usefull work and it exports no functions
- *  which are intended to be used for anything. Use at your own risk.
- *  </description>
- *  <copyright>
- *  (c) 2003-2017 3S-Smart Software Solutions
- *  </copyright>
- */
+ /**
+  *  <name>Component Template</name>
+  *  <description>
+  *  An example on how to implement a component.
+  *  This component does no usefull work and it exports no functions
+  *  which are intended to be used for anything. Use at your own risk.
+  *  </description>
+  *  <copyright>
+  *  (c) 2003-2017 3S-Smart Software Solutions
+  *  </copyright>
+  */
 #ifndef _ELFINCOLLABORATIVELIBDEP_H_
 #define _ELFINCOLLABORATIVELIBDEP_H_
 
@@ -30,7 +30,7 @@
 #define CMP_VERSION_STRING "1.0.0.0"
 #define CMP_VERSION_RC      1,0,0,0
 
-/* NOTE: REPLACE 0x0001 BY YOUR VENDORID */
+  /* NOTE: REPLACE 0x0001 BY YOUR VENDORID */
 #define CMP_VENDORID       0x0001
 
 #ifndef WIN32_RESOURCES
@@ -62,23 +62,23 @@
 
 
 
-    
-     
-
-
-    
 
 
 
-      
 
 
 
-     
+
+
+
+
+
+
+
 
 
 #ifdef CPLUSPLUS
-    #define INIT_STMT \
+#define INIT_STMT \
     {\
         IBase *pIBase;\
         RTS_RESULT initResult;\
@@ -112,7 +112,7 @@
           /*Obsolete include CMUtils*/ \
 		   \
     }
-    #define INIT_LOCALS_STMT \
+#define INIT_LOCALS_STMT \
     {\
         pICmpLog = NULL; \
         pICMUtils = NULL; \
@@ -120,7 +120,7 @@
           /*Obsolete include CMUtils*/ \
 		   \
     }
-    #define EXIT_STMT \
+#define EXIT_STMT \
     {\
         IBase *pIBase;\
         RTS_RESULT exitResult;\
@@ -158,17 +158,17 @@
 		   \
     }
 #else
-    #define INIT_STMT
-    #define INIT_LOCALS_STMT
-    #define EXIT_STMT
+#define INIT_STMT
+#define INIT_LOCALS_STMT
+#define EXIT_STMT
 #endif
 
 
 
 #if defined(STATIC_LINK)
-    #define IMPORT_STMT
+#define IMPORT_STMT
 #else
-    #define IMPORT_STMT \
+#define IMPORT_STMT \
     {\
         RTS_RESULT importResult = ERR_OK;\
         RTS_RESULT TempResult = ERR_OK;\
@@ -193,8 +193,15 @@
 #define EXPORT_EXTREF_STMT \
         { (RTS_VOID_FCTPTR)updatestateestimates, "updatestateestimates", 0x0D0F1BB6, 0x01000000 },\
           { (RTS_VOID_FCTPTR)updatej3j5accelerometer, "updatej3j5accelerometer", 0xFEC26347, 0x01000000 },\
+<<<<<<< HEAD
           { (RTS_VOID_FCTPTR)updateforcesensordata, "updateforcesensordata", 0x853A9D07, 0x01000000 },\
           { (RTS_VOID_FCTPTR)updateexternalaxisstate, "updateexternalaxisstate", 0xF276A89F, 0x01000000 },\
+=======
+          { (RTS_VOID_FCTPTR)updateforcesensorforfocecontrol, "updateforcesensorforfocecontrol", 0x7DF51220, 0x01000000 },\
+          { (RTS_VOID_FCTPTR)updateforcesensordata, "updateforcesensordata", 0x853A9D07, 0x01000000 },\
+          { (RTS_VOID_FCTPTR)updateexternalaxisstate, "updateexternalaxisstate", 0xF276A89F, 0x01000000 },\
+          { (RTS_VOID_FCTPTR)updatedualencoderjointposition, "updatedualencoderjointposition", 0xDDEBD37A, 0x01000000 },\
+>>>>>>> 40f7afc7711530af2c9319aaedf0d2aa15dee117
           { (RTS_VOID_FCTPTR)setstarttimeforcheckassistivemode, "setstarttimeforcheckassistivemode", 0xF95F41F2, 0x01000000 },\
           { (RTS_VOID_FCTPTR)setstartassistivemode, "setstartassistivemode", 0x018FD046, 0x01000000 },\
           { (RTS_VOID_FCTPTR)setrobotmountingangles, "setrobotmountingangles", 0x774360BE, 0x01000000 },\
@@ -211,35 +218,47 @@
           { (RTS_VOID_FCTPTR)setcollisionstopinmomentumthresholds, "setcollisionstopinmomentumthresholds", 0xDC15365C, 0x01000000 },\
           { (RTS_VOID_FCTPTR)setcollisiondrivebackmode, "setcollisiondrivebackmode", 0x35465C30, 0x01000000 },\
           { (RTS_VOID_FCTPTR)setcollaborativejointspacelimits, "setcollaborativejointspacelimits", 0xC7F0193C, 0x01000000 },\
+          { (RTS_VOID_FCTPTR)setaugmentedthdindualencoder, "setaugmentedthdindualencoder", 0xA6973A99, 0x01000000 },\
           { (RTS_VOID_FCTPTR)setassistivemodecollisionstopthresholds, "setassistivemodecollisionstopthresholds", 0x95CB564B, 0x01000000 },\
           { (RTS_VOID_FCTPTR)setactutortorqueconstants, "setactutortorqueconstants", 0x995D6518, 0x01000000 },\
           { (RTS_VOID_FCTPTR)setactutormaxcurrentlimits, "setactutormaxcurrentlimits", 0x51F9F45A, 0x01000000 },\
           { (RTS_VOID_FCTPTR)setactutordampconstants, "setactutordampconstants", 0x5F20C2CB, 0x01000000 },\
+          { (RTS_VOID_FCTPTR)set15066strategy, "set15066strategy", 0x41622766, 0x01000000 },\
           { (RTS_VOID_FCTPTR)resetcobotstatus, "resetcobotstatus", 0xA7FAE663, 0x01000000 },\
           { (RTS_VOID_FCTPTR)monitormotionconstraintstatus, "monitormotionconstraintstatus", 0x88062ACE, 0x01000000 },\
           { (RTS_VOID_FCTPTR)initializecollaborativealgorithm, "initializecollaborativealgorithm", 0xBFF655A5, 0x01000000 },\
           { (RTS_VOID_FCTPTR)getsettingparameters, "getsettingparameters", 0x0180F8FE, 0x01000000 },\
+          { (RTS_VOID_FCTPTR)getinertiaofjoint, "getinertiaofjoint", 0x1FA1A115, 0x01000000 },\
           { (RTS_VOID_FCTPTR)getgravitytorquecurrentcommands, "getgravitytorquecurrentcommands", 0x30D8A81C, 0x01000000 },\
           { (RTS_VOID_FCTPTR)getflexiblecompensatetorque, "getflexiblecompensatetorque", 0x27D3DE2B, 0x01000000 },\
           { (RTS_VOID_FCTPTR)getestimatedstate, "getestimatedstate", 0x49A2CB2A, 0x01000000 },\
           { (RTS_VOID_FCTPTR)getcomputetorquecurrentcommands, "getcomputetorquecurrentcommands", 0x047F1D78, 0x01000000 },\
           { (RTS_VOID_FCTPTR)getassistivemodemotorcurrentcommands, "getassistivemodemotorcurrentcommands", 0x35D3E6EC, 0x01000000 },\
+          { (RTS_VOID_FCTPTR)enableaugmentedassistivemodeindualencoder, "enableaugmentedassistivemodeindualencoder", 0x374FB9CC, 0x01000000 },\
           { (RTS_VOID_FCTPTR)checkforcollision, "checkforcollision", 0xE9568F15, 0x01000000 },\
           { (RTS_VOID_FCTPTR)calculatepowerandmomentumconstraints, "calculatepowerandmomentumconstraints", 0x4FA4BE9E, 0x01000000 },\
-          
+
 #else
 #define EXPORT_EXTREF_STMT
 #endif
 #ifndef ELFINCOLLABORATIVELIB_DISABLE_EXTREF2
 #define EXPORT_EXTREF2_STMT \
+<<<<<<< HEAD
                                                                               
+=======
+
+>>>>>>> 40f7afc7711530af2c9319aaedf0d2aa15dee117
 #else
 #define EXPORT_EXTREF2_STMT
 #endif
 #if !defined(STATIC_LINK) && !defined(CPLUSPLUS) && !defined(CPLUSPLUS_ONLY)
 #define EXPORT_CMPITF_STMT \
     {\
+<<<<<<< HEAD
                                                                               \
+=======
+                                                                                          \
+>>>>>>> 40f7afc7711530af2c9319aaedf0d2aa15dee117
         { ((RTS_VOID_FCTPTR)(void *)0), "", 0, 0 }\
     }
 #else
@@ -252,7 +271,7 @@
 
 
 #if defined(STATIC_LINK)
-    #define EXPORT_STMT\
+#define EXPORT_STMT\
     {\
         RTS_RESULT ExpResult;\
         if (NULL == s_pfCMRegisterAPI)\
@@ -262,7 +281,7 @@
             return ExpResult;\
     }
 #else
-    #define EXPORT_STMT\
+#define EXPORT_STMT\
     {\
         RTS_RESULT ExpResult;\
         if (NULL == s_pfCMRegisterAPI)\
@@ -342,68 +361,68 @@
     EXT_SysFileRead  \
     EXT_SysFileWrite 
 #ifndef COMPONENT_NAME
-    #error COMPONENT_NAME is not defined. This prevents the component from being linked statically. Use SET_COMPONENT_NAME(<name_of_your_component>) to set the name of the component in your .m4 component description.
+#error COMPONENT_NAME is not defined. This prevents the component from being linked statically. Use SET_COMPONENT_NAME(<name_of_your_component>) to set the name of the component in your .m4 component description.
 #endif
 
 
 
 
 #if defined(STATIC_LINK) || defined(MIXED_LINK) || defined(DYNAMIC_LINK) || defined(CPLUSPLUS_STATIC_LINK)
-    #define ComponentEntry ElfinCollaborativeLib__Entry
+#define ComponentEntry ElfinCollaborativeLib__Entry
 #endif
 
 
 #ifdef CPLUSPLUS
 
-class CElfinCollaborativeLib : public IElfinCollaborativeLib 
+class CElfinCollaborativeLib : public IElfinCollaborativeLib
 {
-    public:
-        CElfinCollaborativeLib() : hElfinCollaborativeLib(RTS_INVALID_HANDLE), iRefCount(0)
+public:
+    CElfinCollaborativeLib() : hElfinCollaborativeLib(RTS_INVALID_HANDLE), iRefCount(0)
+    {
+    }
+    virtual ~CElfinCollaborativeLib()
+    {
+    }
+    virtual unsigned long AddRef(IBase* pIBase = NULL)
+    {
+        iRefCount++;
+        return iRefCount;
+    }
+    virtual unsigned long Release(IBase* pIBase = NULL)
+    {
+        iRefCount--;
+        if (iRefCount == 0)
         {
+            delete this;
+            return 0;
         }
-        virtual ~CElfinCollaborativeLib()
-        {
-        }
-        virtual unsigned long AddRef(IBase *pIBase = NULL)
-        {
-            iRefCount++;
-            return iRefCount;
-        }
-        virtual unsigned long Release(IBase *pIBase = NULL)
-        {
-            iRefCount--;
-            if (iRefCount == 0)
-            {
-                delete this;
-                return 0;
-            }
-            return iRefCount;
-        }
+        return iRefCount;
+    }
 
-        
-        virtual void* QueryInterface(IBase *pIBase, ITFID iid, RTS_RESULT *pResult)
-        {
-            void *pItf;
-            if (iid == ITFID_IBase)
-                pItf = dynamic_cast<IBase *>((IElfinCollaborativeLib *)this);            
-            else if (iid == ITFID_IElfinCollaborativeLib)
-                pItf = dynamic_cast<IElfinCollaborativeLib *>(this); 
-            else
-            {
-                if (pResult != NULL)
-                    *pResult = ERR_NOTIMPLEMENTED;
-                return NULL;
-            }
-            if (pResult != (RTS_RESULT *)1)
-                (reinterpret_cast<IBase *>(pItf))->AddRef();
-            if (pResult != NULL && pResult != (RTS_RESULT *)1)
-                *pResult = ERR_OK;
-            return pItf;
-        }
 
-    public:
-        RTS_HANDLE hElfinCollaborativeLib;
-        int iRefCount;
+    virtual void* QueryInterface(IBase* pIBase, ITFID iid, RTS_RESULT* pResult)
+    {
+        void* pItf;
+        if (iid == ITFID_IBase)
+            pItf = dynamic_cast<IBase*>((IElfinCollaborativeLib*)this);
+        else if (iid == ITFID_IElfinCollaborativeLib)
+            pItf = dynamic_cast<IElfinCollaborativeLib*>(this);
+        else
+        {
+            if (pResult != NULL)
+                *pResult = ERR_NOTIMPLEMENTED;
+            return NULL;
+        }
+        if (pResult != (RTS_RESULT*)1)
+            (reinterpret_cast<IBase*>(pItf))->AddRef();
+        if (pResult != NULL && pResult != (RTS_RESULT*)1)
+            *pResult = ERR_OK;
+        return pItf;
+    }
+
+public:
+    RTS_HANDLE hElfinCollaborativeLib;
+    int iRefCount;
 };
 
 #endif /*CPLUSPLUS*/

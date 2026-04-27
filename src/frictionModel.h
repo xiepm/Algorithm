@@ -1,7 +1,11 @@
 ﻿#pragma once
 #include "frames.hpp"
 #include "typeDef.h"
-#include <boost/circular_buffer.hpp>
+//#include <boost/circular_buffer.hpp>
+#include "circular_buffer.hpp"
+#include <iostream>
+#include <deque>
+//#define				dualDiffEncoderThd								 0.001					// 0.001°，使用双编位置差值，作为开启静摩擦力矩补偿的依据；
 
 class predictiveStartTorque
 {
@@ -48,11 +52,78 @@ private:
 	EcReal							m_amplitudeTorque;
 	EcReal							m_currentTime;
 	EcReal							m_predictiveCompensateTorque;
-	boost::circular_buffer<EcReal>	m_OldSensedTorques;     ///< A circular buffer for time series joint position data
+	circular_buffer<EcReal>	m_OldSensedTorques;     ///< A circular buffer for time series joint position data
+};
 
+// 滑动窗口计算定周期的差值；
+class SlidingWindow {
+public:
+	SlidingWindow(){
+		window_size_ = 1;
+		window_.resize(window_size_);
+		diffWindow_.resize(window_size_);
+	}
 
+	void setWindowSize(const size_t new_size, const size_t middleSize) {
+		window_size_ = new_size;
+		window_.resize(new_size);
+		diffWindow_.resize(new_size);
 
+		//计算200ms对应的整数周期；
+		middle_size_ = middleSize;
 
+	}
+
+	void addValue(double value) {
+		window_.pop_front();
+		window_.push_back(value);
+	}
+
+	bool checkOverZeroCrossingsCount(const std::deque<double>& data, size_t window_size) const {
+		bool isOver = false;
+		int zero_crossings = 0;
+		size_t start_index = data.size() - window_size;
+		for (size_t i = start_index + 1; i < data.size(); ++i) {
+			if (data[i - 1] * data[i] < 0) {
+				++zero_crossings;
+				if (zero_crossings > 2)
+				{
+					isOver = true;
+					break;
+				}
+			}
+		}
+		//std::cout << "crossCount:" << isOver << "," << zero_crossings<<","<<data.size()<<","<<window_size<<","<<data[middle_size_]<<","<<data.back() << std::endl;
+		return isOver;
+	}
+
+	double getDifference(const double thd) {
+		// 500ms和200ms两个时间间距双编差值的变化量，取其中最大数值；
+		double middleDelta = window_.back() - window_[middle_size_];
+		double lastDelta = window_.back() - window_.front();
+
+		// 加大500ms的权重；
+		lastDelta = fabs(lastDelta) > thd ? lastDelta * 2.0 : lastDelta;
+
+		EcReal diff = fabs(middleDelta) > fabs(lastDelta) ? middleDelta : lastDelta;
+		diffWindow_.pop_front();
+		diffWindow_.push_back(diff);
+
+		bool isVibration = checkOverZeroCrossingsCount(diffWindow_, middle_size_);
+		if (isVibration)
+			return 0;
+		else
+		{
+			return diff;
+		}
+		
+	}
+
+private:
+	std::deque<double> window_;
+	std::deque<double> diffWindow_;
+	size_t window_size_;
+	size_t middle_size_;
 };
 
 
@@ -82,10 +153,17 @@ public:
 		const EcRealVector& viscousFriction
 		);
 
+	// 静摩擦力矩的补偿；
 	void setCompensateFactor
 		(
 		const EcRealVector& compensateFactor
 		);
+
+	// 粘性摩擦力矩的补偿系数；
+	void setDynFrictionCompensateFactor
+	(
+		const EcRealVector& compensateFactor
+	);
 
 	void setStartCompensateFrictionFactor
 		(
@@ -96,7 +174,25 @@ public:
 		(
 		const EcRealVector& maxJointVelocities
 		);
+
+	// 是否使用双编的状态；
+	void setAssistDualEncoderFlag(const EcBoolean flag) {
+		b_dualEncoderAssistFlag = flag;
+	}
+
+	// 基于双编差值处理的启动补偿力矩，未使用；
+	void setDualEncoderStateCompensateFactor(const EcRealVector& dualFactor) {
+		m_dualCompensateFactor = dualFactor;
+		//m_compensateConfigFactor = dualFactor;
+	}
 	
+	// 实时更新双编码器的数值；
+	void updateDualEncoder(const EcRealVector& jointSidePosition, const EcRealVector& motorSidePosition);
+
+	void setDualDiffEncoderThd(const EcRealVector& thd) {
+		m_dualDiffEncoderThd = thd;
+	}
+
 	void calculateCompensateFriction
 		(
 		const EcRealVector& currentJointPosition,
@@ -187,4 +283,10 @@ private:
 	EcRealVector						m_meanJointTorques;								// 在dither状态下一段时间内（5个周期）最大值和最小值的移动平均值；
 	EcRealVector						m_amplitudeDitherTorques;						// 在dither状态下一段时间内的幅值（平均值）；
 
+	// 双编信息
+	EcBoolean							b_dualEncoderAssistFlag;						// 是否使用双编码器辅助；
+	std::vector<SlidingWindow>			m_dualEncoderDiffWindows;						// 双编差值处理滑动窗口；
+	EcRealVector						m_dualCompensateFactor;							// 双编状态估计下的补偿系数； 
+
+	EcRealVector						m_dualDiffEncoderThd;							// 使用双编位置差值，作为开启静摩擦力矩补偿的依据；
 };
