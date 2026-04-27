@@ -66,7 +66,7 @@ EcBoolean CHansCollaborativeAlgorithm::initializeStates
 	// other -> Elfin 六轴
 	if (robotType == 1)
 		m_dynBase.reset(new urDynamics);
-	else if (robotType == 2)
+	else if (robotType == 20)
 		m_dynBase.reset(new sevendofDynamics);
 	else
 		m_dynBase.reset(new elfinDynamics);
